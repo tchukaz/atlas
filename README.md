@@ -1,69 +1,96 @@
 # Atlas House
 
-Marketing site for atlashouseng.com plus the referral-challenge tracking that sits on top of it.
+Marketing site for atlashouseng.com plus the referral challenge that runs on top of it.
 
-## What it does
+## How it works
 
-Each participant gets a link like `atlashouseng.com/go/ada`. Opening it logs the click and
-forwards to WhatsApp with the message pre-filled as `Hi Atlas House! (ref: ADA)`, so an enquiry
-is attributed to whoever sent it without anyone having to remember a name.
+You share one invite link. People sign up themselves and each gets their own tracking link, so you
+never set anyone up by hand.
+
+```
+/join  →  they fill in name, email, WhatsApp  →  they get atlashouseng.com/go/<their-handle>
+       →  someone opens it  →  lands in your WhatsApp, tagged "(ref: THEIR-CODE)"
+       →  you log the booking  →  leaderboard moves  →  daily email nudges everyone
+```
 
 | Route | Who it's for |
 | --- | --- |
 | `/` | The public site |
+| `/join` | The invite link you share |
 | `/go/<code>` | Participants' shareable links |
+| `/me/<token>` | A participant's own stats, emailed to them |
 | `/leaderboard` | Public standings, safe to post anywhere |
-| `/admin` | Ops: roster, per-person messages, logging enquiries and bookings |
+| `/kit` | Caption and photos for participants to share |
+| `/rules` | The terms, stated publicly |
+| `/admin` | Roster, bookings, payouts, reminders |
 
-Clicks are counted by the server. Enquiries, bookings and nights are typed in by the ops manager
-on `/admin`, because only a human can confirm that a stay was paid for and checked in.
-Ranking is by bookings, then unique clicks as the tiebreak.
+## Why clicks don't decide the winner
+
+Click fraud can't be beaten technically — anyone can toggle airplane mode for a fresh IP, and click
+farms are cheap. So the leaderboard ranks on **confirmed bookings**, which only exist because your
+ops manager saw a guest pay and check in. Clicks are shown for credit but carry no ranking weight,
+and saying so publicly removes most of the reason to fake them.
+
+What the system does guard automatically:
+
+- Repeat clicks from one device collapse into one per day
+- Bot and link-preview traffic is logged but never counted
+- A referrer's own device stops counting once they open their dashboard
+- Signing up twice returns the original link instead of issuing a second code
+- A booking whose guest phone matches a registered participant is flagged for review
 
 ## Running it
 
 ```bash
 npm install
-cp .env.example .env   # then fill in ADMIN_PASSWORD, IP_SALT and the challenge dates
+cp .env.example .env   # fill in ADMIN_PASSWORD, IP_SALT, dates, Resend key
 npm start
 ```
 
-`npm run dev` restarts on file changes.
+`npm run dev` restarts on changes. Without `RESEND_API_KEY` the server still runs and logs the
+emails it would have sent, which is what you want locally.
+
+Preview the daily nudge without sending anything:
+
+```bash
+node src/reminders.js --dry-run
+```
 
 ## Deploying
 
 The site currently publishes through GitHub Pages, which serves static files only and **cannot run
-this server**. To go live with tracking, deploy to a Node host (Render, Railway, Fly) and point the
-`atlashouseng.com` DNS record there instead of at GitHub Pages.
+this server**. Going live means deploying to a Node host (Render, Railway, Fly) and pointing
+`atlashouseng.com` there instead.
 
-Set the same variables from `.env.example` in the host's environment. Two that matter:
+Three things that will bite otherwise:
 
-- `SITE_URL` must be the live origin, since every tracking link is built from it.
-- `IP_SALT` must be set once and kept. It is what lets repeat clicks from one phone collapse into a
-  single unique click; change it and everyone looks new again.
+- **`DATA_DIR` must point at a persistent disk.** The SQLite database holds your participants. Left
+  on the default path it is wiped on every redeploy.
+- **Don't use a sleeping instance.** Free tiers idle out, and an idle process never fires the daily
+  reminder cron. This needs an always-on instance.
+- **`IP_SALT` is set once and kept.** It is what lets repeat clicks collapse; change it and every
+  visitor looks new again.
 
-Attach a persistent disk mounted at `data/` — the roster, the click log and the ops ledger live
-there as files, so an ephemeral filesystem loses them on every redeploy.
-
-## Adding participants
-
-Paste the contact list into the box on `/admin`, one name per line. The code defaults to the first
-name, lowercased; write `Ada Obi, adaobi` to set it yourself. Codes are the thing people read
-aloud, so keep them short and without numbers.
-
-Each row then gives you a **Copy link** and a **Copy message** button. The message is the
-announcement text with that person's own link already in it — send it individually, not as a
-broadcast.
+Resend needs `atlashouseng.com` verified with its DKIM/SPF records before it will send anything.
+Start that early — it doesn't conflict with your current DNS.
 
 ## During the week
 
-The ops manager updates enquiries and bookings daily from the WhatsApp inbox. Response time is the
-thing that decides whether any of this works: a tagged enquiry left for two hours is a lost booking,
-and no amount of clicks makes up for it.
+Your ops manager works from `/admin`: log each booking once the guest has **paid and checked in**,
+update enquiry counts, and mark payouts as they go out. Bookings carrying a red flag mean the guest's
+number matches someone on the roster — worth a look before paying.
 
-`/admin/export.csv` dumps the current standings if you want them in a spreadsheet or Notion.
+Response time on WhatsApp is what decides whether any of this works. A tagged enquiry left sitting
+for two hours is a lost booking, and no volume of clicks makes up for it.
 
 ## A note on the pre-filled message
 
-WhatsApp lets the sender edit the pre-filled text before sending, so a few people will delete the
+WhatsApp lets the sender edit the pre-filled text before sending, so some people will delete the
 `(ref: CODE)` line. The click is still logged against them, so match those enquiries by hand when
-the counts disagree.
+the numbers disagree.
+
+## Data
+
+Names, emails and phone numbers are personal data under Nigeria's NDPA. The signup form takes
+explicit consent, the public leaderboard shows first names and an initial only, and contact details
+are visible only behind the admin password. Delete a record on request.

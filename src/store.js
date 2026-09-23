@@ -1,180 +1,235 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import crypto from 'node:crypto';
-import { IP_SALT } from './config.js';
+import { db } from './db.js';
+import { normalizePhone } from './phone.js';
+import { BURST, subnetHash, visitorHash, looksAutomated } from './fraud.js';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const PARTICIPANTS_FILE = path.join(DATA_DIR, 'participants.json');
-const LEDGER_FILE = path.join(DATA_DIR, 'ledger.json');
-const CLICKS_FILE = path.join(DATA_DIR, 'clicks.jsonl');
-
-fs.mkdirSync(DATA_DIR, { recursive: true });
-
-function readJson(file, fallback) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJson(file, value) {
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
-  fs.renameSync(tmp, file);
-}
-
-let participants = readJson(PARTICIPANTS_FILE, []);
-let ledger = readJson(LEDGER_FILE, {});
-
-const clicks = fs.existsSync(CLICKS_FILE)
-  ? fs
-      .readFileSync(CLICKS_FILE, 'utf8')
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean)
-  : [];
-
-const clickLog = fs.createWriteStream(CLICKS_FILE, { flags: 'a' });
+const RESERVED = new Set([
+  'admin', 'go', 'api', 'join', 'me', 'rules', 'kit', 'assets', 'leaderboard',
+  'data', 'src', 'www', 'about', 'book', 'booking', 'contact', 'atlas', 'atlashouse'
+]);
 
 export const normalizeCode = (raw) =>
-  String(raw || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '')
-    .slice(0, 24);
+  String(raw || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20);
 
-export const listParticipants = () => participants.slice();
-
-export const findParticipant = (code) =>
-  participants.find((p) => p.code === normalizeCode(code)) || null;
-
-export function addParticipant(name, code) {
-  const cleanName = String(name || '').trim().slice(0, 60);
-  const cleanCode = normalizeCode(code || cleanName.split(/\s+/)[0]);
-  if (!cleanName) throw new Error('Name is required.');
-  if (!cleanCode) throw new Error('Code must contain at least one letter or number.');
-  if (findParticipant(cleanCode)) throw new Error(`Code "${cleanCode}" is already taken.`);
-
-  participants.push({ name: cleanName, code: cleanCode, addedAt: new Date().toISOString() });
-  participants.sort((a, b) => a.name.localeCompare(b.name));
-  writeJson(PARTICIPANTS_FILE, participants);
-  return cleanCode;
+export function codeProblem(code) {
+  if (code.length < 3) return 'Pick at least 3 letters or numbers.';
+  if (RESERVED.has(code)) return `"${code}" is reserved. Try another.`;
+  if (findByCode(code)) return `"${code}" is already taken.`;
+  return null;
 }
 
-export function removeParticipant(code) {
+export const findByCode = (code) =>
+  db.prepare('SELECT * FROM participants WHERE code = ?').get(normalizeCode(code)) || null;
+
+export const findByToken = (token) =>
+  db.prepare('SELECT * FROM participants WHERE token = ?').get(String(token || '')) || null;
+
+export const findByContact = (phone, email) =>
+  db
+    .prepare('SELECT * FROM participants WHERE phone = ? OR email = ?')
+    .get(phone, String(email || '').toLowerCase()) || null;
+
+export const listParticipants = () =>
+  db.prepare('SELECT * FROM participants ORDER BY created_at').all();
+
+export function createParticipant({ name, email, phoneRaw, code }) {
+  const phone = normalizePhone(phoneRaw);
+  const token = crypto.randomBytes(24).toString('hex');
+  const now = new Date().toISOString();
+
+  const info = db
+    .prepare(
+      `INSERT INTO participants (name, email, phone, phone_raw, code, token, consent_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(name, String(email).toLowerCase(), phone, String(phoneRaw), code, token, now, now);
+
+  return db.prepare('SELECT * FROM participants WHERE id = ?').get(info.lastInsertRowid);
+}
+
+export function setStatus(code, status) {
+  db.prepare('UPDATE participants SET status = ? WHERE code = ?').run(status, normalizeCode(code));
+}
+
+export function setEnquiries(code, count) {
+  db.prepare('UPDATE participants SET enquiries = ? WHERE code = ?').run(
+    Math.max(0, Math.trunc(Number(count) || 0)),
+    normalizeCode(code)
+  );
+}
+
+export function recordClick({ code, ip, userAgent, referer, selfToken }) {
   const clean = normalizeCode(code);
-  participants = participants.filter((p) => p.code !== clean);
-  writeJson(PARTICIPANTS_FILE, participants);
+  const visitor = visitorHash(ip, userAgent);
+  const owner = findByCode(clean);
+  const isSelf = Boolean(selfToken && owner && selfToken === owner.token);
+
+  db.prepare(
+    `INSERT INTO clicks (code, ts, visitor, subnet, referer, is_bot, is_self)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    clean,
+    new Date().toISOString(),
+    visitor,
+    subnetHash(ip),
+    String(referer || '').slice(0, 200),
+    looksAutomated(userAgent) ? 1 : 0,
+    isSelf ? 1 : 0
+  );
 }
 
-// Collapses repeat clicks from one device so the reach number means something.
-export const visitorId = (ip, userAgent) =>
-  crypto
-    .createHash('sha256')
-    .update(`${IP_SALT}|${ip || ''}|${userAgent || ''}`)
-    .digest('hex')
-    .slice(0, 16);
+// A click counts once per visitor per day per code. Clicks from bots, or from the
+// referrer's own device, are stored but never counted.
+const COUNTED = `is_bot = 0 AND is_self = 0`;
 
-export function recordClick({ code, ip, userAgent, referer }) {
-  const entry = {
-    ts: new Date().toISOString(),
-    code: normalizeCode(code),
-    vid: visitorId(ip, userAgent),
-    ref: String(referer || '').slice(0, 200)
-  };
-  clicks.push(entry);
-  clickLog.write(`${JSON.stringify(entry)}\n`);
-  return entry;
-}
-
-export function setLedger(code, fields) {
-  const clean = normalizeCode(code);
-  const current = ledger[clean] || { enquiries: 0, bookings: 0, nights: 0 };
-  ledger[clean] = {
-    enquiries: Math.max(0, Math.trunc(Number(fields.enquiries ?? current.enquiries)) || 0),
-    bookings: Math.max(0, Math.trunc(Number(fields.bookings ?? current.bookings)) || 0),
-    nights: Math.max(0, Math.trunc(Number(fields.nights ?? current.nights)) || 0)
-  };
-  writeJson(LEDGER_FILE, ledger);
-  return ledger[clean];
-}
+const clickStats = db.prepare(`
+  SELECT
+    COUNT(*) AS total,
+    COUNT(DISTINCT visitor || substr(ts, 1, 10)) AS unique_clicks,
+    MAX(ts) AS last_click
+  FROM clicks WHERE code = ? AND ${COUNTED}
+`);
 
 export function standings() {
-  const byCode = new Map();
-  for (const p of participants) {
-    byCode.set(p.code, {
+  const rows = listParticipants().map((p) => {
+    const clicks = clickStats.get(p.code);
+    const booking = db
+      .prepare(
+        `SELECT COUNT(*) AS bookings, COALESCE(SUM(nights), 0) AS nights
+         FROM bookings WHERE code = ?`
+      )
+      .get(p.code);
+
+    return {
       ...p,
-      clicks: 0,
-      uniqueClicks: 0,
-      lastClickAt: null,
-      enquiries: ledger[p.code]?.enquiries ?? 0,
-      bookings: ledger[p.code]?.bookings ?? 0,
-      nights: ledger[p.code]?.nights ?? 0,
-      _seen: new Set()
-    });
-  }
+      clicks: clicks.total || 0,
+      uniqueClicks: clicks.unique_clicks || 0,
+      lastClickAt: clicks.last_click,
+      bookings: booking.bookings || 0,
+      nights: booking.nights || 0,
+      disqualified: p.status === 'disqualified'
+    };
+  });
 
-  for (const click of clicks) {
-    const row = byCode.get(click.code);
-    if (!row) continue;
-    row.clicks += 1;
-    if (!row._seen.has(click.vid)) {
-      row._seen.add(click.vid);
-      row.uniqueClicks += 1;
-    }
-    if (!row.lastClickAt || click.ts > row.lastClickAt) row.lastClickAt = click.ts;
-  }
+  // Bookings decide the order. Clicks only ever break a tie, so inflating them
+  // cannot move anyone past a referrer who actually delivered a guest.
+  return rows.sort(
+    (a, b) =>
+      Number(a.disqualified) - Number(b.disqualified) ||
+      b.bookings - a.bookings ||
+      b.nights - a.nights ||
+      b.uniqueClicks - a.uniqueClicks ||
+      a.created_at.localeCompare(b.created_at)
+  );
+}
 
-  return [...byCode.values()]
-    .map(({ _seen, ...row }) => row)
-    .sort(
-      (a, b) =>
-        b.bookings - a.bookings ||
-        b.uniqueClicks - a.uniqueClicks ||
-        b.clicks - a.clicks ||
-        a.name.localeCompare(b.name)
-    );
+export function rankOf(code) {
+  const ranked = standings().filter((r) => !r.disqualified);
+  const index = ranked.findIndex((r) => r.code === normalizeCode(code));
+  return { rank: index === -1 ? null : index + 1, of: ranked.length, leader: ranked[0] || null };
 }
 
 export function totals() {
   const rows = standings();
+  const sum = (key) => rows.reduce((n, r) => n + r[key], 0);
   return {
     participants: rows.length,
-    clicks: rows.reduce((n, r) => n + r.clicks, 0),
-    uniqueClicks: rows.reduce((n, r) => n + r.uniqueClicks, 0),
-    enquiries: rows.reduce((n, r) => n + r.enquiries, 0),
-    bookings: rows.reduce((n, r) => n + r.bookings, 0),
-    nights: rows.reduce((n, r) => n + r.nights, 0)
+    active: rows.filter((r) => !r.disqualified).length,
+    clicks: sum('clicks'),
+    uniqueClicks: sum('uniqueClicks'),
+    enquiries: sum('enquiries'),
+    bookings: sum('bookings'),
+    nights: sum('nights')
   };
 }
 
-// Clicks on codes that are not (or no longer) on the roster — usually a typo'd
-// or retired link, worth seeing rather than silently dropping.
-export function orphanClicks() {
-  const known = new Set(participants.map((p) => p.code));
-  const counts = new Map();
-  for (const click of clicks) {
-    if (known.has(click.code)) continue;
-    counts.set(click.code, (counts.get(click.code) || 0) + 1);
-  }
-  return [...counts.entries()].map(([code, count]) => ({ code, count }));
+export const listBookings = () =>
+  db.prepare('SELECT * FROM bookings ORDER BY checked_in_on DESC, id DESC').all();
+
+export function addBooking({ code, guestName, guestPhone, nights, checkedInOn }) {
+  const clean = normalizeCode(code);
+  const phone = normalizePhone(guestPhone);
+
+  // A referrer booking their own stay — or a second participant's — turns the
+  // payout into a discount on their own bill. Flag it; a human decides.
+  const conflict = phone
+    ? db.prepare('SELECT name, code FROM participants WHERE phone = ?').get(phone)
+    : null;
+  const flagged = conflict
+    ? conflict.code === clean
+      ? 'Guest phone matches the referrer'
+      : `Guest phone matches participant ${conflict.name}`
+    : null;
+
+  db.prepare(
+    `INSERT INTO bookings (code, guest_name, guest_phone, nights, checked_in_on, flagged, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    clean,
+    String(guestName || '').trim().slice(0, 80),
+    phone || String(guestPhone || '').slice(0, 20),
+    Math.max(1, Math.trunc(Number(nights) || 1)),
+    String(checkedInOn || new Date().toISOString().slice(0, 10)),
+    flagged,
+    new Date().toISOString()
+  );
 }
+
+export const setPayoutStatus = (id, status) =>
+  db.prepare('UPDATE bookings SET payout_status = ? WHERE id = ?').run(status, Number(id));
+
+export const deleteBooking = (id) =>
+  db.prepare('DELETE FROM bookings WHERE id = ?').run(Number(id));
+
+// Many clicks on one code from a single network in minutes: the signature of
+// someone refreshing their own link rather than of genuine reach.
+export const burstFlags = () =>
+  db
+    .prepare(
+      `SELECT code, subnet, COUNT(*) AS hits, MIN(ts) AS from_ts, MAX(ts) AS to_ts
+       FROM clicks
+       WHERE subnet IS NOT NULL AND is_bot = 0
+       GROUP BY code, subnet, substr(ts, 1, 15)
+       HAVING hits >= ?
+       ORDER BY hits DESC
+       LIMIT 20`
+    )
+    .all(BURST.maxPerSubnet);
 
 export function dailyClicks(days = 7) {
   const out = [];
-  const today = new Date();
   for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    const key = d.toISOString().slice(0, 10);
-    out.push({ date: key, count: clicks.filter((c) => c.ts.startsWith(key)).length });
+    const day = new Date();
+    day.setDate(day.getDate() - i);
+    const key = day.toISOString().slice(0, 10);
+    const row = db
+      .prepare(`SELECT COUNT(*) AS n FROM clicks WHERE substr(ts, 1, 10) = ? AND ${COUNTED}`)
+      .get(key);
+    out.push({ date: key, count: row.n });
   }
   return out;
 }
+
+export const orphanClicks = () =>
+  db
+    .prepare(
+      `SELECT code, COUNT(*) AS count FROM clicks
+       WHERE code NOT IN (SELECT code FROM participants)
+       GROUP BY code ORDER BY count DESC LIMIT 20`
+    )
+    .all();
+
+export const alreadyReminded = (participantId, sendDate, kind = 'daily') =>
+  Boolean(
+    db
+      .prepare('SELECT 1 FROM reminders WHERE participant_id = ? AND send_date = ? AND kind = ?')
+      .get(participantId, sendDate, kind)
+  );
+
+export const markReminded = (participantId, sendDate, kind = 'daily') =>
+  db
+    .prepare(
+      `INSERT OR IGNORE INTO reminders (participant_id, send_date, kind, sent_at)
+       VALUES (?, ?, ?, ?)`
+    )
+    .run(participantId, sendDate, kind, new Date().toISOString());

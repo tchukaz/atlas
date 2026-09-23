@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { WHATSAPP_NUMBER, waLink } from '../config.js';
 import { esc } from '../views.js';
-import { findParticipant, normalizeCode, recordClick } from '../store.js';
+import { findByCode, normalizeCode, recordClick } from '../store.js';
 
 const router = Router();
 
@@ -51,25 +51,37 @@ function interstitial(destination) {
 </html>`;
 }
 
+const readOwnToken = (req) => {
+  const header = req.headers.cookie || '';
+  for (const part of header.split(';')) {
+    const [key, ...rest] = part.trim().split('=');
+    if (key === 'atlas_ref') return decodeURIComponent(rest.join('='));
+  }
+  return null;
+};
+
 router.get('/go/:code', (req, res) => {
   const code = normalizeCode(req.params.code);
-  const participant = findParticipant(code);
+  const participant = findByCode(code);
 
   if (code) {
     recordClick({
       code,
       ip: req.ip,
       userAgent: req.get('user-agent'),
-      referer: req.get('referer')
+      referer: req.get('referer'),
+      selfToken: readOwnToken(req)
     });
   }
 
+  // A disqualified referrer still forwards their traffic. The guest did nothing
+  // wrong, and a booking is worth more than the point being made.
   res
     .set('Cache-Control', 'no-store')
     .type('html')
     .send(interstitial(participant ? waLink(participant.code) : FALLBACK_WA));
 });
 
-router.get('/go', (_req, res) => res.redirect(302, '/'));
+router.get('/go', (_req, res) => res.redirect(302, '/join'));
 
 export default router;
