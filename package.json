@@ -13,10 +13,15 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
+    "mongoose": "^9.10.2",
+    "multer": "^2.4.0",
     "node-cron": "^4.6.0",
-    "resend": "^6.28.1"
+    "resend": "^6.28.1",
+    "sharp": "^0.35.4"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.3.0"
   }
 }

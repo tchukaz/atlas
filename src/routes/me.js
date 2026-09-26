@@ -5,8 +5,8 @@ import { findByToken, rankOf, standings } from '../store.js';
 
 const router = Router();
 
-router.get('/me/:token', (req, res) => {
-  const participant = findByToken(req.params.token);
+router.get('/me/:token', async (req, res) => {
+  const participant = await findByToken(req.params.token);
   if (!participant) {
     return res
       .status(404)
@@ -21,8 +21,8 @@ router.get('/me/:token', (req, res) => {
       );
   }
 
-  const row = standings().find((r) => r.code === participant.code);
-  const { rank, of, leader } = rankOf(participant.code);
+  const row = (await standings()).find((r) => r.code === participant.code);
+  const { rank, of, leader } = await rankOf(participant.code);
   const earned = row.bookings * CHALLENGE.perBookingNaira;
   const remaining = daysLeft();
   const link = trackingLink(participant.code);

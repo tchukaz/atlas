@@ -9,6 +9,19 @@ export const WHATSAPP_NUMBER = process.env.WHATSAPP_NUMBER || '2348026883536';
 
 export const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 
+export const MONGODB_URI = process.env.MONGODB_URI || '';
+
+// Uploads live outside the web root and are served only through an authenticated
+// route, because guest IDs will end up in here whatever the stated purpose is.
+export const UPLOAD_DIR = process.env.UPLOAD_DIR || 'data/uploads';
+
+export const IMAGE = {
+  maxWidth: Number(process.env.IMAGE_MAX_WIDTH) || 1600,
+  quality: Number(process.env.IMAGE_QUALITY) || 80,
+  thumbWidth: 320,
+  maxUploadBytes: Number(process.env.MAX_UPLOAD_MB || 15) * 1024 * 1024
+};
+
 // Rotating this invalidates every logged visitor fingerprint, which is the point:
 // we never store raw IPs, only a salted hash used to collapse repeat clicks.
 export const IP_SALT = process.env.IP_SALT || crypto.randomBytes(16).toString('hex');

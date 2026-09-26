@@ -157,13 +157,13 @@ function successPage(participant, { returning = false } = {}) {
 
 router.get('/join', (_req, res) => res.type('html').send(signupForm()));
 
-router.get('/join/available', (req, res) => {
+router.get('/join/available', async (req, res) => {
   const code = normalizeCode(req.query.code);
-  const problem = codeProblem(code);
+  const problem = await codeProblem(code);
   res.json({ ok: !problem, reason: problem || '' });
 });
 
-router.post('/join', (req, res) => {
+router.post('/join', async (req, res) => {
   const { name = '', email = '', phone = '', code = '', consent, website } = req.body || {};
   const values = { name, email, phone, code };
   const fail = (error) => res.status(400).type('html').send(signupForm({ values, error }));
@@ -185,14 +185,14 @@ router.post('/join', (req, res) => {
 
   // Someone coming back a second time gets their original link rather than an
   // error — and cannot collect a second code to spread activity across.
-  const existing = findByContact(normalizedPhone, cleanEmail);
+  const existing = await findByContact(normalizedPhone, cleanEmail);
   if (existing) return res.type('html').send(successPage(existing, { returning: true }));
 
   const cleanCode = normalizeCode(code);
-  const problem = codeProblem(cleanCode);
+  const problem = await codeProblem(cleanCode);
   if (problem) return fail(problem);
 
-  const participant = createParticipant({
+  const participant = await createParticipant({
     name: cleanName,
     email: cleanEmail,
     phoneRaw: phone,

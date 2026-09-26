@@ -1,0 +1,172 @@
+import mongoose from 'mongoose';
+
+const { Schema, model } = mongoose;
+
+/* ── Referral side ─────────────────────────────────────────────────────── */
+
+const participantSchema = new Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+  phone: { type: String, required: true, unique: true },
+  phoneRaw: String,
+  code: { type: String, required: true, unique: true },
+  token: { type: String, required: true, unique: true },
+  enquiries: { type: Number, default: 0 },
+  status: { type: String, enum: ['active', 'disqualified'], default: 'active' },
+  consentAt: Date,
+  createdAt: { type: Date, default: Date.now }
+});
+
+const clickSchema = new Schema({
+  code: { type: String, required: true, index: true },
+  ts: { type: Date, default: Date.now, index: true },
+  visitor: { type: String, required: true },
+  subnet: String,
+  referer: String,
+  isBot: { type: Boolean, default: false },
+  isSelf: { type: Boolean, default: false }
+});
+
+const reminderSchema = new Schema({
+  participant: { type: Schema.Types.ObjectId, ref: 'Participant', required: true },
+  sendDate: { type: String, required: true },
+  kind: { type: String, default: 'daily' },
+  sentAt: { type: Date, default: Date.now }
+});
+reminderSchema.index({ participant: 1, sendDate: 1, kind: 1 }, { unique: true });
+
+/* ── Inventory ─────────────────────────────────────────────────────────── */
+
+const propertySchema = new Schema({
+  name: { type: String, required: true },
+  bedrooms: { type: Number, required: true, min: 1 },
+  // Whether the bedrooms may be sold to separate parties. Off means the whole
+  // apartment goes to one booking or not at all.
+  splittable: { type: Boolean, default: false },
+  notes: String,
+  active: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const roomSchema = new Schema({
+  property: { type: Schema.Types.ObjectId, ref: 'Property', required: true, index: true },
+  name: { type: String, required: true },
+  active: { type: Boolean, default: true }
+});
+
+/* ── What gets sold ────────────────────────────────────────────────────── */
+
+export const SHAPES = {
+  entire: 'Entire apartment',
+  room: 'Private room in a shared apartment'
+};
+
+export const TIERS = {
+  standard: 'Standard — inverter backup, no AC during an outage',
+  premium: 'Premium — generator backup, AC runs through an outage'
+};
+
+const productSchema = new Schema({
+  name: { type: String, required: true },
+  shape: { type: String, enum: Object.keys(SHAPES), required: true },
+  tier: { type: String, enum: Object.keys(TIERS), required: true },
+  bedrooms: { type: Number, default: 1 },
+  // What you would normally charge. Constrains nothing — the booking records
+  // what was actually paid — but without it a discount is invisible later.
+  referenceRate: { type: Number, default: 0 },
+  active: { type: Boolean, default: true }
+});
+
+/* ── Bookings ──────────────────────────────────────────────────────────── */
+
+export const BOOKING_STATUSES = ['enquiry', 'confirmed', 'checked_in', 'checked_out', 'cancelled', 'no_show'];
+
+// Statuses that actually hold a room. An enquiry does not block anyone, and a
+// cancellation must free the dates immediately.
+export const BLOCKING_STATUSES = ['confirmed', 'checked_in', 'checked_out'];
+
+const paymentSchema = new Schema(
+  { amount: { type: Number, required: true }, method: String, paidOn: Date, note: String },
+  { _id: true }
+);
+
+const bookingSchema = new Schema({
+  reference: { type: String, required: true, unique: true },
+  guestName: { type: String, required: true },
+  guestPhone: String,
+  guestEmail: String,
+
+  product: { type: Schema.Types.ObjectId, ref: 'Product' },
+  rooms: [{ type: Schema.Types.ObjectId, ref: 'Room', required: true }],
+  tier: { type: String, enum: Object.keys(TIERS), required: true },
+
+  checkIn: { type: Date, required: true, index: true },
+  checkOut: { type: Date, required: true, index: true },
+  status: { type: String, enum: BOOKING_STATUSES, default: 'confirmed', index: true },
+
+  quotedAmount: { type: Number, default: 0 },
+  payments: [paymentSchema],
+
+  // Held against damage, returned afterwards. Tracked apart from the stay money
+  // so it never shows up as revenue.
+  deposit: {
+    amount: { type: Number, default: 0 },
+    takenOn: Date,
+    note: String,
+    refund: {
+      amount: Number,
+      processedOn: Date,
+      note: String
+    }
+  },
+
+  referralCode: { type: String, index: true },
+  flagged: String,
+  notes: String,
+  createdAt: { type: Date, default: Date.now }
+});
+
+bookingSchema.virtual('totalPaid').get(function () {
+  return (this.payments || []).reduce((sum, p) => sum + (p.amount || 0), 0);
+});
+
+bookingSchema.virtual('balance').get(function () {
+  return Math.max(0, (this.quotedAmount || 0) - this.totalPaid);
+});
+
+bookingSchema.virtual('depositOutstanding').get(function () {
+  const held = this.deposit?.amount || 0;
+  if (!held) return 0;
+  return this.deposit?.refund?.processedOn ? 0 : held;
+});
+
+bookingSchema.set('toObject', { virtuals: true });
+bookingSchema.set('toJSON', { virtuals: true });
+
+/* ── Records portal ────────────────────────────────────────────────────── */
+
+const attachmentSchema = new Schema({
+  kind: { type: String, enum: ['image', 'file'], default: 'image' },
+  title: String,
+  note: String,
+  filename: { type: String, required: true },
+  thumbname: String,
+  mimetype: String,
+  bytes: Number,
+  // Free-form tagging beats a rigid category list for a store that holds guest
+  // photos, apartment shots, receipts and reviews alike.
+  tags: [String],
+  booking: { type: Schema.Types.ObjectId, ref: 'Booking', index: true },
+  property: { type: Schema.Types.ObjectId, ref: 'Property', index: true },
+  sensitive: { type: Boolean, default: false },
+  uploadedAt: { type: Date, default: Date.now }
+});
+
+export const Participant = model('Participant', participantSchema);
+export const Click = model('Click', clickSchema);
+export const Reminder = model('Reminder', reminderSchema);
+export const Property = model('Property', propertySchema);
+export const Room = model('Room', roomSchema);
+export const Product = model('Product', productSchema);
+export const Booking = model('Booking', bookingSchema);
+export const Attachment = model('Attachment', attachmentSchema);

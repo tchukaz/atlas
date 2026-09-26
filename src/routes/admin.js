@@ -1,65 +1,31 @@
 import { Router } from 'express';
-import crypto from 'node:crypto';
-import {
-  ADMIN_PASSWORD,
-  CHALLENGE,
-  SITE_URL,
-  daysLeft,
-  naira,
-  trackingLink
-} from '../config.js';
+import { CHALLENGE, SITE_URL, daysLeft, naira, trackingLink } from '../config.js';
 import { esc, layout } from '../views.js';
+import { tabs, OPS_CSS, flashOf, back } from '../views-ops.js';
+import { closeSession, openSession, passwordMatches, requireAdmin } from '../auth.js';
+import { ADMIN_PASSWORD } from '../config.js';
 import { formatPhone } from '../phone.js';
 import { runDailyNudges } from '../reminders.js';
 import {
-  addBooking,
   burstFlags,
   dailyClicks,
-  deleteBooking,
-  listBookings,
   orphanClicks,
   rankOf,
   setEnquiries,
-  setPayoutStatus,
   setStatus,
   standings,
   totals
 } from '../store.js';
 
 const router = Router();
-
-const SESSIONS = new Set();
-const COOKIE = 'atlas_admin';
 const failures = new Map();
-
-function readCookie(req, name) {
-  const header = req.headers.cookie || '';
-  for (const part of header.split(';')) {
-    const [key, ...rest] = part.trim().split('=');
-    if (key === name) return decodeURIComponent(rest.join('='));
-  }
-  return null;
-}
-
-function passwordMatches(supplied) {
-  if (!ADMIN_PASSWORD) return false;
-  const a = Buffer.from(String(supplied || ''));
-  const b = Buffer.from(ADMIN_PASSWORD);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
-function requireAdmin(req, res, next) {
-  const token = readCookie(req, COOKIE);
-  if (token && SESSIONS.has(token)) return next();
-  return res.redirect(302, '/admin/login');
-}
 
 function loginPage(message = '') {
   return layout({
     title: 'Atlas House — Admin',
     body: `
   <p class="eyebrow">Atlas House</p>
-  <h1>Referral admin</h1>
+  <h1>Sign in</h1>
   ${message ? `<div class="notice bad" style="margin-top:20px;">${esc(message)}</div>` : ''}
   <form method="post" action="/admin/login" class="card" style="margin-top:24px;max-width:420px;">
     <label class="stat-label" for="password">Password</label>
@@ -93,58 +59,49 @@ router.post('/admin/login', (req, res) => {
   }
 
   failures.delete(ip);
-  const token = crypto.randomBytes(24).toString('hex');
-  SESSIONS.add(token);
-  res.cookie(COOKIE, token, {
-    httpOnly: true,
-    sameSite: 'strict',
-    secure: req.secure,
-    maxAge: 12 * 60 * 60 * 1000
-  });
-  res.redirect(302, '/admin');
+  openSession(res, req.secure);
+  res.redirect(302, '/ops/calendar');
 });
 
 router.post('/admin/logout', (req, res) => {
-  const token = readCookie(req, COOKIE);
-  if (token) SESSIONS.delete(token);
-  res.clearCookie(COOKIE);
+  closeSession(req, res);
   res.redirect(302, '/admin/login');
 });
 
-function nudgeText(row) {
-  const { rank, leader } = rankOf(row.code);
+async function nudgeText(row) {
+  const { rank, leader } = await rankOf(row.code);
   const remaining = daysLeft();
   const first = row.name.split(/\s+/)[0];
   const position =
     leader && leader.bookings > row.bookings
       ? `${leader.name.split(/\s+/)[0]} is on ${leader.bookings}, you're on ${row.bookings}.`
       : rank === 1 && row.bookings > 0
-        ? `You're top of the board.`
-        : `Nobody has a booking yet — first one takes the lead.`;
+        ? "You're top of the board."
+        : 'Nobody has a booking yet — first one takes the lead.';
 
   return `${first} — ${position} ${
     remaining === null ? '' : `${remaining} day${remaining === 1 ? '' : 's'} left. `
   }Your link: ${trackingLink(row.code)}`;
 }
 
-router.get('/admin', requireAdmin, (req, res) => {
-  const rows = standings();
-  const sum = totals();
-  const bookings = listBookings();
-  const bursts = burstFlags();
-  const orphans = orphanClicks();
-  const daily = dailyClicks(7);
+router.get('/admin', requireAdmin, async (req, res) => {
+  const [rows, sum, bursts, orphans, daily] = await Promise.all([
+    standings(),
+    totals(),
+    burstFlags(),
+    orphanClicks(),
+    dailyClicks(7)
+  ]);
+  const { flash, error } = flashOf(req);
   const peak = Math.max(1, ...daily.map((d) => d.count));
-  const flash = typeof req.query.msg === 'string' ? req.query.msg.slice(0, 300) : '';
-  const error = typeof req.query.err === 'string' ? req.query.err.slice(0, 300) : '';
-
-  const owed = bookings.filter((b) => b.payout_status === 'pending').length * CHALLENGE.perBookingNaira;
   const inviteLink = `${SITE_URL}/join`;
+
+  const nudges = await Promise.all(rows.map((row) => nudgeText(row)));
 
   const rosterRows = rows.length
     ? rows
         .map(
-          (row) => `<tr${row.disqualified ? ' style="opacity:0.45;"' : ''}>
+          (row, i) => `<tr${row.disqualified ? ' style="opacity:0.45;"' : ''}>
       <td>
         <strong>${esc(row.name)}</strong>${row.disqualified ? ' <span class="muted">(removed)</span>' : ''}<br/>
         <span class="mono">${esc(row.code)}</span><br/>
@@ -152,6 +109,7 @@ router.get('/admin', requireAdmin, (req, res) => {
       </td>
       <td class="num">${row.uniqueClicks}<br/><span class="muted" style="font-size:11px;">${row.clicks} raw</span></td>
       <td class="num">${row.bookings}<br/><span class="muted" style="font-size:11px;">${row.nights} nights</span></td>
+      <td class="num">${naira(row.bookings * CHALLENGE.perBookingNaira)}</td>
       <td>
         <form method="post" action="/admin/enquiries" style="display:flex;gap:6px;align-items:center;">
           <input type="hidden" name="code" value="${esc(row.code)}"/>
@@ -161,7 +119,7 @@ router.get('/admin', requireAdmin, (req, res) => {
       </td>
       <td>
         <button type="button" class="ghost copy" data-copy="${esc(trackingLink(row.code))}">Link</button>
-        <button type="button" class="ghost copy" data-copy="${esc(nudgeText(row))}">Nudge</button>
+        <button type="button" class="ghost copy" data-copy="${esc(nudges[i])}">Nudge</button>
         <form method="post" action="/admin/status" style="margin-top:6px;">
           <input type="hidden" name="code" value="${esc(row.code)}"/>
           <input type="hidden" name="status" value="${row.disqualified ? 'active' : 'disqualified'}"/>
@@ -171,62 +129,29 @@ router.get('/admin', requireAdmin, (req, res) => {
     </tr>`
         )
         .join('')
-    : `<tr><td colspan="5" class="muted" style="padding:28px 10px;">
+    : `<tr><td colspan="6" class="muted" style="padding:28px 10px;">
          Nobody has signed up yet. Share the invite link above.
        </td></tr>`;
 
-  const bookingRows = bookings.length
-    ? bookings
-        .map(
-          (b) => `<tr>
-      <td><span class="mono">${esc(b.code)}</span></td>
-      <td>${esc(b.guest_name)}<br/><span class="muted" style="font-size:11px;">${esc(formatPhone(b.guest_phone))}</span></td>
-      <td class="num">${b.nights}</td>
-      <td>${esc(b.checked_in_on)}</td>
-      <td>${b.flagged ? `<span style="color:#C4553D;">${esc(b.flagged)}</span>` : '<span class="muted">—</span>'}</td>
-      <td>
-        <form method="post" action="/admin/payout" style="display:flex;gap:6px;">
-          <input type="hidden" name="id" value="${b.id}"/>
-          <input type="hidden" name="status" value="${b.payout_status === 'paid' ? 'pending' : 'paid'}"/>
-          <button type="submit" class="ghost">${b.payout_status === 'paid' ? 'Paid ✓' : 'Mark paid'}</button>
-        </form>
-      </td>
-      <td>
-        <form method="post" action="/admin/booking/delete"
-              onsubmit="return confirm('Delete this booking?');">
-          <input type="hidden" name="id" value="${b.id}"/>
-          <button type="submit" class="ghost">Delete</button>
-        </form>
-      </td>
-    </tr>`
-        )
-        .join('')
-    : `<tr><td colspan="7" class="muted" style="padding:24px 10px;">No bookings logged yet.</td></tr>`;
-
-  const options = rows
-    .filter((r) => !r.disqualified)
-    .map((r) => `<option value="${esc(r.code)}">${esc(r.name)} (${esc(r.code)})</option>`)
-    .join('');
-
   res.type('html').send(
     layout({
-      title: 'Atlas House — Referral Admin',
-      extraCss: `
+      title: 'Atlas House — Referrals',
+      extraCss: `${OPS_CSS}
         .bars { display:flex; align-items:flex-end; gap:10px; height:70px; }
         .bars div { flex:1; background:rgba(201,168,76,0.35); border-radius:2px 2px 0 0; min-height:2px; }
         .invite { background:#0E0E0E; border:1px solid var(--line); border-radius:3px;
-                  padding:14px; margin:12px 0; word-break:break-all; }
-      `,
+                  padding:14px; margin:12px 0; word-break:break-all; }`,
       body: `
   <p class="eyebrow">Atlas House · Ops</p>
-  <h1>Referral admin</h1>
-  ${flash ? `<div class="notice" style="margin-top:20px;">${esc(flash)}</div>` : ''}
-  ${error ? `<div class="notice bad" style="margin-top:20px;">${esc(error)}</div>` : ''}
+  <h1>Referrals</h1>
+  ${tabs('/admin')}
+  ${flash ? `<div class="notice">${esc(flash)}</div>` : ''}
+  ${error ? `<div class="notice bad">${esc(error)}</div>` : ''}
 
-  <div class="card" style="margin-top:26px;">
+  <div class="card">
     <h2 style="font-size:20px;margin-top:0;">Invite link</h2>
     <p class="muted" style="font-size:14px;">Send this to everyone. They sign up and get their own
-    link automatically — you do not have to set anyone up by hand.</p>
+    link automatically — you do not set anyone up by hand.</p>
     <div class="invite mono">${esc(inviteLink)}</div>
     <button type="button" class="copy" data-copy="${esc(inviteLink)}">Copy invite link</button>
   </div>
@@ -234,7 +159,7 @@ router.get('/admin', requireAdmin, (req, res) => {
   <div class="card">
     <div class="stat-row">
       <div><div class="stat-number">${sum.bookings}</div><div class="stat-label">Bookings</div></div>
-      <div><div class="stat-number">${naira(owed)}</div><div class="stat-label">Owed</div></div>
+      <div><div class="stat-number">${naira(sum.bookings * CHALLENGE.perBookingNaira)}</div><div class="stat-label">Owed</div></div>
       <div><div class="stat-number">${sum.enquiries}</div><div class="stat-label">Enquiries</div></div>
       <div><div class="stat-number">${sum.uniqueClicks}</div><div class="stat-label">Clicks</div></div>
       <div><div class="stat-number">${sum.active}</div><div class="stat-label">Referrers</div></div>
@@ -250,34 +175,12 @@ router.get('/admin', requireAdmin, (req, res) => {
     </div>
   </div>
 
-  <h2>Log a booking</h2>
   <div class="card">
-    <p class="muted" style="font-size:13px;margin-bottom:14px;">
-      Only once the stay is paid for and the guest has checked in.
+    <p class="muted" style="font-size:13px;margin:0;">
+      Referral credit is counted from real bookings — log those under
+      <a href="/ops/bookings">Bookings</a> with the referrer's code, and a booking counts once the
+      guest has checked in. Nothing is typed twice.
     </p>
-    <form method="post" action="/admin/booking" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
-      <label class="muted" style="font-size:11px;">Referrer<br/>
-        <select name="code" required style="margin-top:5px;">${options}</select></label>
-      <label class="muted" style="font-size:11px;">Guest name<br/>
-        <input name="guestName" required maxlength="80" style="margin-top:5px;"/></label>
-      <label class="muted" style="font-size:11px;">Guest phone<br/>
-        <input name="guestPhone" maxlength="20" placeholder="0802…" style="margin-top:5px;"/></label>
-      <label class="muted" style="font-size:11px;">Nights<br/>
-        <input class="num" name="nights" type="number" min="1" value="1" style="margin-top:5px;"/></label>
-      <label class="muted" style="font-size:11px;">Checked in<br/>
-        <input name="checkedInOn" type="date" value="${new Date().toISOString().slice(0, 10)}" style="margin-top:5px;"/></label>
-      <button type="submit">Add booking</button>
-    </form>
-  </div>
-
-  <div class="card scroll">
-    <table>
-      <thead><tr>
-        <th>Code</th><th>Guest</th><th class="num">Nights</th><th>Checked in</th>
-        <th>Flag</th><th>Payout</th><th></th>
-      </tr></thead>
-      <tbody>${bookingRows}</tbody>
-    </table>
   </div>
 
   <h2>Referrers</h2>
@@ -285,7 +188,7 @@ router.get('/admin', requireAdmin, (req, res) => {
     <table>
       <thead><tr>
         <th>Referrer</th><th class="num">Clicks</th><th class="num">Bookings</th>
-        <th>Enquiries</th><th></th>
+        <th class="num">Earned</th><th>Enquiries</th><th></th>
       </tr></thead>
       <tbody>${rosterRows}</tbody>
     </table>
@@ -303,7 +206,7 @@ router.get('/admin', requireAdmin, (req, res) => {
              .map(
                (b) =>
                  `<div><span class="mono">${esc(b.code)}</span>
-                  <span class="muted">— ${b.hits} clicks around ${esc(b.from_ts.slice(0, 16).replace('T', ' '))}</span></div>`
+                  <span class="muted">— ${b.hits} clicks around ${esc(new Date(b.fromTs).toISOString().slice(0, 16).replace('T', ' '))}</span></div>`
              )
              .join('')}`
         : ''
@@ -338,7 +241,7 @@ router.get('/admin', requireAdmin, (req, res) => {
 
   <form method="post" action="/admin/logout"><button type="submit" class="ghost">Sign out</button></form>
   <p class="muted" style="font-size:13px;margin-top:20px;">
-    <a href="/leaderboard">Standings</a> · <a href="/admin/export.csv">Export CSV</a>
+    <a href="/leaderboard">Public standings</a> · <a href="/admin/export.csv">Export CSV</a>
   </p>
 
   <script>
@@ -355,41 +258,15 @@ router.get('/admin', requireAdmin, (req, res) => {
   );
 });
 
-const back = (res, { msg, err }) => {
-  const params = new URLSearchParams();
-  if (msg) params.set('msg', msg);
-  if (err) params.set('err', err);
-  res.redirect(302, `/admin?${params}`);
-};
-
-router.post('/admin/booking', requireAdmin, (req, res) => {
-  const { code, guestName, guestPhone, nights, checkedInOn } = req.body || {};
-  if (!code || !String(guestName || '').trim()) {
-    return back(res, { err: 'A referrer and a guest name are required.' });
-  }
-  addBooking({ code, guestName, guestPhone, nights, checkedInOn });
-  back(res, { msg: `Booking logged for ${code}.` });
+router.post('/admin/enquiries', requireAdmin, async (req, res) => {
+  await setEnquiries(req.body?.code, req.body?.enquiries);
+  back(res, '/admin', { msg: `Enquiries updated for ${req.body?.code}.` });
 });
 
-router.post('/admin/payout', requireAdmin, (req, res) => {
-  setPayoutStatus(req.body?.id, req.body?.status === 'paid' ? 'paid' : 'pending');
-  back(res, { msg: 'Payout status updated.' });
-});
-
-router.post('/admin/booking/delete', requireAdmin, (req, res) => {
-  deleteBooking(req.body?.id);
-  back(res, { msg: 'Booking deleted.' });
-});
-
-router.post('/admin/enquiries', requireAdmin, (req, res) => {
-  setEnquiries(req.body?.code, req.body?.enquiries);
-  back(res, { msg: `Enquiries updated for ${req.body?.code}.` });
-});
-
-router.post('/admin/status', requireAdmin, (req, res) => {
+router.post('/admin/status', requireAdmin, async (req, res) => {
   const status = req.body?.status === 'disqualified' ? 'disqualified' : 'active';
-  setStatus(req.body?.code, status);
-  back(res, { msg: `${req.body?.code} is now ${status}.` });
+  await setStatus(req.body?.code, status);
+  back(res, '/admin', { msg: `${req.body?.code} is now ${status}.` });
 });
 
 router.post('/admin/nudges', requireAdmin, async (req, res) => {
@@ -401,17 +278,18 @@ router.post('/admin/nudges', requireAdmin, async (req, res) => {
       : `${dryRun ? 'Would send' : 'Sent'} ${result.sent}, skipped ${result.skipped}${
           result.failed ? `, failed ${result.failed}` : ''
         }.`;
-    back(res, { msg: summary });
+    back(res, '/admin', { msg: summary });
   } catch (err) {
-    back(res, { err: err.message });
+    back(res, '/admin', { err: err.message });
   }
 });
 
-router.get('/admin/export.csv', requireAdmin, (_req, res) => {
+router.get('/admin/export.csv', requireAdmin, async (_req, res) => {
   const header =
     'Name,Code,Email,Phone,Link,Clicks,Unique clicks,Enquiries,Bookings,Nights,Earned,Status';
   const cell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-  const lines = standings().map((row) =>
+  const rows = await standings();
+  const lines = rows.map((row) =>
     [
       cell(row.name),
       row.code,

@@ -20,7 +20,7 @@ export async function runDailyNudges({ dryRun = false } = {}) {
     return result;
   }
 
-  const rows = standings();
+  const rows = await standings();
   const remaining = daysLeft() ?? 0;
 
   for (const row of rows) {
@@ -28,12 +28,12 @@ export async function runDailyNudges({ dryRun = false } = {}) {
       result.skipped += 1;
       continue;
     }
-    if (alreadyReminded(row.id, today)) {
+    if (await alreadyReminded(row.id, today)) {
       result.skipped += 1;
       continue;
     }
 
-    const { rank, of, leader } = rankOf(row.code);
+    const { rank, of, leader } = await rankOf(row.code);
 
     if (dryRun) {
       console.log(`[dry-run] ${row.email} — rank ${rank}/${of}, ${row.bookings} bookings`);
@@ -52,7 +52,7 @@ export async function runDailyNudges({ dryRun = false } = {}) {
       });
       // Marked only after a successful send, so a failure retries tomorrow
       // rather than silently swallowing the nudge.
-      markReminded(row.id, today);
+      await markReminded(row.id, today);
       result.sent += 1;
     } catch (err) {
       console.error(`nudge failed for ${row.email}:`, err.message);

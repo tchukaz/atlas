@@ -60,18 +60,20 @@ const readOwnToken = (req) => {
   return null;
 };
 
-router.get('/go/:code', (req, res) => {
+router.get('/go/:code', async (req, res) => {
   const code = normalizeCode(req.params.code);
-  const participant = findByCode(code);
+  const participant = await findByCode(code);
 
   if (code) {
+    // Not awaited: a guest heading to WhatsApp should never wait on our logging,
+    // and a lost click matters less than a slow redirect.
     recordClick({
       code,
       ip: req.ip,
       userAgent: req.get('user-agent'),
       referer: req.get('referer'),
       selfToken: readOwnToken(req)
-    });
+    }).catch((err) => console.error('click log failed:', err.message));
   }
 
   // A disqualified referrer still forwards their traffic. The guest did nothing

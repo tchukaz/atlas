@@ -19,9 +19,9 @@ function dateRange() {
   return `${fmt(CHALLENGE.startDate)} — ${fmt(CHALLENGE.endDate)}`;
 }
 
-router.get('/leaderboard', (_req, res) => {
-  const rows = standings().filter((r) => !r.disqualified);
-  const sum = totals();
+router.get('/leaderboard', async (_req, res) => {
+  const rows = (await standings()).filter((r) => !r.disqualified);
+  const sum = await totals();
   const range = dateRange();
   const remaining = daysLeft();
 

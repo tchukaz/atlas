@@ -1,56 +1,93 @@
 # Atlas House
 
-Marketing site for atlashouseng.com plus the referral challenge that runs on top of it.
+Marketing site for atlashouseng.com, the referral challenge, and the internal booking system.
 
-## How it works
+Node · Express · MongoDB.
 
-You share one invite link. People sign up themselves and each gets their own tracking link, so you
-never set anyone up by hand.
+## The two halves
 
-```
-/join  →  they fill in name, email, WhatsApp  →  they get atlashouseng.com/go/<their-handle>
-       →  someone opens it  →  lands in your WhatsApp, tagged "(ref: THEIR-CODE)"
-       →  you log the booking  →  leaderboard moves  →  daily email nudges everyone
-```
+**Public** — the marketing site plus the referral challenge. People sign themselves up, get their own
+tracking link, and share it.
 
-| Route | Who it's for |
+**Internal** (`/admin`, `/ops`) — bookings, inventory, guest records and reports. One password, no
+guest logins. Guest self-booking is deliberately not built.
+
+| Route | |
 | --- | --- |
 | `/` | The public site |
-| `/join` | The invite link you share |
-| `/go/<code>` | Participants' shareable links |
-| `/me/<token>` | A participant's own stats, emailed to them |
-| `/leaderboard` | Public standings, safe to post anywhere |
-| `/kit` | Caption and photos for participants to share |
-| `/rules` | The terms, stated publicly |
-| `/admin` | Roster, bookings, payouts, reminders |
+| `/join` · `/go/<code>` · `/me/<token>` | Referral signup, tracking links, referrer dashboards |
+| `/leaderboard` · `/kit` · `/rules` | Public standings, share kit, terms |
+| `/ops/bookings` | Availability, new bookings, payments, deposits |
+| `/ops/calendar` | Today's arrivals, departures and in-house |
+| `/ops/inventory` | Apartments, bedrooms, products |
+| `/ops/records` | Photos and documents |
+| `/ops/reports` | Occupancy, revenue, mix |
+| `/admin` | Referral roster and nudges |
 
-## Why clicks don't decide the winner
+## How inventory works
 
-Click fraud can't be beaten technically — anyone can toggle airplane mode for a fresh IP, and click
-farms are cheap. So the leaderboard ranks on **confirmed bookings**, which only exist because your
-ops manager saw a guest pay and check in. Clicks are shown for credit but carry no ranking weight,
-and saying so publicly removes most of the reason to fake them.
+**The bedroom is the unit of inventory**, not the apartment. Two counters — "N one-beds, M two-beds" —
+cannot express a two-bed sold by the room, because the apartment and its bedrooms are the same
+inventory counted twice.
 
-What the system does guard automatically:
+So a booking holds specific bedrooms. Sell one bedroom of a two-bed and the system already knows the
+other is still free and the whole apartment is not available, without any rule saying so. Apartments
+have a `splittable` toggle: off means the whole place goes to one booking or not at all.
 
-- Repeat clicks from one device collapse into one per day
-- Bot and link-preview traffic is logged but never counted
-- A referrer's own device stops counting once they open their dashboard
-- Signing up twice returns the original link instead of issuing a second code
-- A booking whose guest phone matches a registered participant is flagged for review
+## Standard and Premium
+
+Same apartments, different promise about backup power:
+
+- **Standard** — inverter backup. AC does not run when the grid is down.
+- **Premium** — generator backup. AC keeps running through an outage.
+
+Because backup power is wired per apartment rather than per bedroom, selling one bedroom Premium and
+the other Standard for the same nights is not physically possible. The system allows it but warns,
+naming the other guest — you either run the generator for both or change the tier. It warns rather
+than blocks so a deliberate special arrangement stays possible.
+
+## Money
+
+Type whatever the guest actually paid, including nothing. Part-payments are recorded individually and
+the balance is derived. Products carry an optional reference rate — what you would normally charge —
+which constrains nothing but lets reports show what was discounted.
+
+Refundable deposits are tracked apart from the stay money so they never appear as revenue. A refund
+is confirmed with an amount and a date, and refunding less than was held records the difference as
+withheld.
+
+## Records
+
+Photos, documents, receipts and reviews, attached to a booking or an apartment.
+
+Images are re-encoded on upload — a phone photo at 11MB lands as roughly 0.4MB, which is the
+difference between a disk that lasts and one that does not. Re-encoding also strips EXIF, including
+the GPS coordinates phones attach to photos.
+
+Files live outside the web root and are served only through an authenticated route with `no-store`,
+because guest IDs end up in here whatever the stated purpose, and a shared office browser should not
+keep serving them after sign-out.
+
+## Referral credit comes from real bookings
+
+Log a booking with the referrer's code and credit follows automatically once the guest is marked
+checked in. Nothing is entered twice. A booking whose guest phone matches a registered participant is
+flagged as a possible self-referral — the payout would otherwise be a discount on their own bill.
 
 ## Running it
 
 ```bash
 npm install
-cp .env.example .env   # fill in ADMIN_PASSWORD, IP_SALT, dates, Resend key
+cp .env.example .env   # fill in MONGODB_URI, ADMIN_PASSWORD, IP_SALT
 npm start
 ```
 
-`npm run dev` restarts on changes. Without `RESEND_API_KEY` the server still runs and logs the
-emails it would have sent, which is what you want locally.
+You need a MongoDB instance. A free Atlas cluster is the easiest, and it gives you a replica set —
+which matters, because overlap checks run in a transaction and a standalone `mongod` cannot do
+transactions. Without one the server still books, but two people entering bookings at the same moment
+could double-book a bedroom.
 
-Preview the daily nudge without sending anything:
+Preview the daily referral nudge without sending anything:
 
 ```bash
 node src/reminders.js --dry-run
@@ -58,39 +95,23 @@ node src/reminders.js --dry-run
 
 ## Deploying
 
-The site currently publishes through GitHub Pages, which serves static files only and **cannot run
-this server**. Going live means deploying to a Node host (Render, Railway, Fly) and pointing
-`atlashouseng.com` there instead.
+GitHub Pages cannot run this. It needs a Node host with:
 
-Three things that will bite otherwise:
+- **A persistent disk for `UPLOAD_DIR`.** The database is remote; the photos are not.
+- **An always-on instance.** Free tiers idle out, and an idle process never fires the reminder cron.
+- **`IP_SALT` set once and kept.** Change it and every past visitor looks new.
 
-- **`DATA_DIR` must point at a persistent disk.** The SQLite database holds your participants. Left
-  on the default path it is wiped on every redeploy.
-- **Don't use a sleeping instance.** Free tiers idle out, and an idle process never fires the daily
-  reminder cron. This needs an always-on instance.
-- **`IP_SALT` is set once and kept.** It is what lets repeat clicks collapse; change it and every
-  visitor looks new again.
+Resend needs `atlashouseng.com` verified with DKIM/SPF before it will send.
 
-Resend needs `atlashouseng.com` verified with its DKIM/SPF records before it will send anything.
-Start that early — it doesn't conflict with your current DNS.
+## Data protection
 
-## During the week
+Guest names, phone numbers, emails and any uploaded identity documents are personal data under
+Nigeria's NDPA. The referral form takes explicit consent, the public leaderboard shows a first name
+and an initial only, and everything else sits behind the admin password. Uploads marked sensitive are
+flagged in the gallery. A retention policy for identity documents is still an open decision — scans
+kept indefinitely are liability with no upside.
 
-Your ops manager works from `/admin`: log each booking once the guest has **paid and checked in**,
-update enquiry counts, and mark payouts as they go out. Bookings carrying a red flag mean the guest's
-number matches someone on the roster — worth a look before paying.
+## Later
 
-Response time on WhatsApp is what decides whether any of this works. A tagged enquiry left sitting
-for two hours is a lost booking, and no volume of clicks makes up for it.
-
-## A note on the pre-filled message
-
-WhatsApp lets the sender edit the pre-filled text before sending, so some people will delete the
-`(ref: CODE)` line. The click is still logged against them, so match those enquiries by hand when
-the numbers disagree.
-
-## Data
-
-Names, emails and phone numbers are personal data under Nigeria's NDPA. The signup form takes
-explicit consent, the public leaderboard shows first names and an initial only, and contact details
-are visible only behind the admin password. Delete a record on request.
+Customer communications — receipts, welcome and house rules, thank-you notes — are a deliberate next
+phase, not an oversight.
