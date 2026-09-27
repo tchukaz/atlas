@@ -60,7 +60,7 @@ router.post('/admin/login', (req, res) => {
 
   failures.delete(ip);
   openSession(res, req.secure);
-  res.redirect(302, '/ops/calendar');
+  res.redirect(302, '/ops/today');
 });
 
 router.post('/admin/logout', (req, res) => {

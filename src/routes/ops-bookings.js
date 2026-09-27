@@ -5,7 +5,16 @@ import { esc } from '../views.js';
 import { opsPage as page, flashOf, back, iso, pretty, todayIso } from '../views-ops.js';
 import { requireAdmin } from '../auth.js';
 import { formatPhone, normalizePhone } from '../phone.js';
-import { Attachment, BOOKING_STATUSES, Booking, Enquiry, Participant, Product, Room } from '../models.js';
+import {
+  Attachment,
+  BOOKING_STATUSES,
+  Booking,
+  Enquiry,
+  Participant,
+  Product,
+  Property,
+  Room
+} from '../models.js';
 import {
   BookingConflict,
   availabilityDetail,
@@ -13,6 +22,7 @@ import {
   day,
   extensionLimit,
   nightsBetween,
+  relocationOptions,
   reserve,
   tierConflict
 } from '../availability.js';
@@ -34,6 +44,8 @@ async function frequentMethods() {
   return [...new Set([...seen, 'Transfer', 'Cash', 'POS'])].slice(0, 8);
 }
 
+const asArray = (value) => (Array.isArray(value) ? value : value ? [value] : []);
+
 const reference = () => `AH-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
 const STATUS_STYLE = {
@@ -53,12 +65,14 @@ router.get('/ops/bookings', async (req, res) => {
   const checkIn = req.query.in || todayIso();
   const checkOut = req.query.out || iso(new Date(Date.now() + 86_400_000));
 
-  const [bookings, products, detail, methods] = await Promise.all([
+  const [bookings, products, detail, methods, amenityRows] = await Promise.all([
     Booking.find().sort({ checkIn: -1 }).limit(100).populate('rooms').lean(),
     Product.find({ active: true }).sort('name').lean(),
     availabilityDetail(checkIn, checkOut),
-    frequentMethods()
+    frequentMethods(),
+    Property.distinct('amenities')
   ]);
+  const amenityList = (amenityRows || []).filter(Boolean);
 
   const roomsBy = new Map();
   for (const property of detail.properties) {
@@ -164,6 +178,7 @@ router.get('/ops/bookings', async (req, res) => {
     page({
       title: 'Bookings',
       active: '/ops/bookings',
+      breadcrumb: [['Bookings', null]],
       ...flashOf(req),
       body: `
   <div class="card">
@@ -235,6 +250,9 @@ router.get('/ops/bookings', async (req, res) => {
         <div><label>Amount paid now</label><input name="paidNow" type="number" min="0" inputmode="numeric"/></div>
         <div><label>Refundable deposit</label><input name="depositAmount" type="number" min="0" inputmode="numeric"/></div>
         <div><label>Referral code</label><input name="referralCode" maxlength="20" placeholder="optional"/></div>
+        <div><label>Came for</label>
+          <input name="requestedAmenities" list="amenitylist" placeholder="ps5, snooker"/>
+          <div class="muted" style="font-size:11px;margin-top:4px;">Locks the room against reshuffles</div></div>
       </div>
       <div style="margin-top:16px;">
         <label class="stat-label" style="display:block;margin-bottom:8px;color:var(--gold);">Bedrooms</label>
@@ -255,6 +273,7 @@ router.get('/ops/bookings', async (req, res) => {
   </div>
 
   <datalist id="methods">${methods.map((m) => `<option value="${esc(m)}"></option>`).join('')}</datalist>
+  <datalist id="amenitylist">${amenityList.map((a) => `<option value="${esc(a)}"></option>`).join('')}</datalist>
 
   <script>
     const productSelect = document.querySelector('select[name=product]');
@@ -291,8 +310,6 @@ router.get('/ops/bookings', async (req, res) => {
     })
   );
 });
-
-const asArray = (value) => (Array.isArray(value) ? value : value ? [value] : []);
 
 router.post('/ops/bookings', async (req, res) => {
   const b = req.body || {};
@@ -353,6 +370,11 @@ router.post('/ops/bookings', async (req, res) => {
                 ? { amount: depositAmount, takenOn: new Date() }
                 : { amount: 0 },
               referralCode: String(b.referralCode || '').toLowerCase().replace(/[^a-z0-9]/g, '') || undefined,
+              requestedAmenities: String(b.requestedAmenities || '')
+                .split(',')
+                .map((a) => a.trim().toLowerCase())
+                .filter(Boolean)
+                .slice(0, 6),
               flagged,
               notes: String(b.notes || '').slice(0, 300)
             }
@@ -380,6 +402,14 @@ router.get('/ops/bookings/:id', async (req, res) => {
     .populate({ path: 'rooms', populate: { path: 'property' } })
     .populate('product');
   if (!booking) return back(res, '/ops/bookings', { err: 'Booking not found.' });
+
+  // Set when an extension was just refused: work out who is in the way and
+  // whether they could simply be housed elsewhere.
+  const wantOut = typeof req.query.wantOut === 'string' ? day(req.query.wantOut) : null;
+  const reshuffle =
+    wantOut && wantOut > day(booking.checkOut)
+      ? await relocationOptions({ booking, from: booking.checkOut, to: wantOut })
+      : null;
 
   const [limit, records, tagRows, methods] = await Promise.all([
     extensionLimit(booking),
@@ -418,6 +448,7 @@ router.get('/ops/bookings/:id', async (req, res) => {
     page({
       title: booking.guestName,
       active: '/ops/bookings',
+      breadcrumb: [['Bookings', '/ops/bookings'], [booking.reference, null]],
       ...flashOf(req),
       body: `
   <div class="card">
@@ -521,11 +552,54 @@ router.get('/ops/bookings/:id', async (req, res) => {
     </p>
     <form method="post" action="/ops/bookings/${booking._id}/dates" class="grid">
       <div><label>New check-out</label>
-        <input name="checkOut" type="date" value="${iso(booking.checkOut)}" required/></div>
+        <input name="checkOut" type="date" value="${iso(wantOut || booking.checkOut)}" required/></div>
       <div><label>Extra charge</label>
         <input name="extraCharge" type="number" min="0" inputmode="numeric" placeholder="0"/></div>
       <div><button type="submit">Update dates</button></div>
     </form>
+
+    ${
+      reshuffle && (reshuffle.movable.length || reshuffle.blocked.length)
+        ? `<div style="border-left:2px solid var(--gold);padding-left:14px;margin-top:20px;">
+        <div class="stat-label" style="margin-bottom:10px;">To reach ${esc(iso(wantOut))}</div>
+        ${reshuffle.movable
+          .map(
+            (m) => `<div style="margin-bottom:14px;">
+          <p class="muted" style="font-size:13px;margin-bottom:8px;">
+            <strong style="color:#F5F0E8;">${esc(m.blocker.guestName)}</strong> has
+            ${esc((m.blocker.rooms || []).map((r) => `${r.property?.name} · ${r.name}`).join(', '))}
+            from ${pretty(m.blocker.checkIn)} and has not checked in.
+            ${
+              (m.blocker.requestedAmenities || []).length
+                ? `They asked for ${esc(m.blocker.requestedAmenities.join(', '))}, so only units with it are offered.`
+                : 'Moving them frees these nights.'
+            }
+          </p>
+          ${m.candidates
+            .map(
+              (c) => `<form method="post" action="/ops/bookings/${booking._id}/reshuffle"
+                            style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+              <input type="hidden" name="blockerId" value="${m.blocker._id}"/>
+              <input type="hidden" name="checkOut" value="${esc(iso(wantOut))}"/>
+              ${c.rooms.map((r) => `<input type="hidden" name="targetRooms" value="${r._id}"/>`).join('')}
+              <span class="muted" style="font-size:13px;">Move to <strong style="color:#F5F0E8;">${esc(c.label)}</strong></span>
+              <button type="submit" class="ghost">Move &amp; extend</button>
+            </form>`
+            )
+            .join('')}
+        </div>`
+          )
+          .join('')}
+        ${reshuffle.blocked
+          .map(
+            (b) => `<p class="muted" style="font-size:13px;margin-bottom:6px;">
+              <span style="color:#C4553D;">${esc(b.why)}</span>
+            </p>`
+          )
+          .join('')}
+      </div>`
+        : ''
+    }
   </div>
 
   <div class="card">
@@ -640,7 +714,11 @@ router.post('/ops/bookings/:id/dates', async (req, res) => {
             blockedBy ? `, when ${blockedBy} arrives` : ''
           } — you could extend to there instead.`
         : '';
-      return back(res, to, { err: `Cannot extend that far.${suggestion}` });
+      // The booking in the way may simply be housable elsewhere, which turns a
+      // refusal into a sale. Offered on the booking page, never done silently.
+      return back(res, `${to}?wantOut=${req.body.checkOut}`, {
+        err: `Cannot extend that far.${suggestion}`
+      });
     }
   }
 
@@ -661,6 +739,76 @@ router.post('/ops/bookings/:id/dates', async (req, res) => {
     msg: `${label} to ${newOut.toISOString().slice(0, 10)} — now ${nightsBetween(booking.checkIn, newOut)} night(s).${
       extra ? ` Quote increased by ${naira(extra)}.` : ''
     }`
+  });
+});
+
+/**
+ * Moves the booking that is in the way, then extends — both inside one
+ * transaction, so the guest in the way is never relocated for an extension
+ * that then fails.
+ */
+router.post('/ops/bookings/:id/reshuffle', async (req, res) => {
+  const booking = await Booking.findById(req.params.id);
+  const blocker = await Booking.findById(req.body?.blockerId);
+  const to = `/ops/bookings/${req.params.id}`;
+
+  if (!booking || !blocker) return back(res, to, { err: 'Booking not found.' });
+  if (blocker.status !== 'confirmed') {
+    return back(res, to, { err: `${blocker.guestName} has already checked in — not moving them.` });
+  }
+
+  const targetRooms = asArray(req.body?.targetRooms).filter(Boolean);
+  const newOut = day(req.body?.checkOut);
+  if (!targetRooms.length || !newOut) return back(res, to, { err: 'Pick where to move them.' });
+
+  const fromRooms = [...blocker.rooms];
+
+  try {
+    await reserve({
+      roomIds: targetRooms,
+      checkIn: blocker.checkIn,
+      checkOut: blocker.checkOut,
+      excludeId: blocker._id,
+      build: async (session) => {
+        blocker.rooms = targetRooms;
+        blocker.history.push({ what: `Moved to make room for ${booking.guestName}` });
+        await blocker.save({ session });
+
+        const stillBusy = await busyRoomIds(booking.checkOut, newOut, {
+          excludeId: booking._id,
+          session
+        });
+        if (booking.rooms.some((id) => stillBusy.has(String(id)))) {
+          throw new BookingConflict('Something else still blocks those nights.');
+        }
+
+        booking.history.push({
+          what: `Extended to ${newOut.toISOString().slice(0, 10)} after moving ${blocker.guestName}`
+        });
+        booking.checkOut = newOut;
+        await booking.save({ session });
+      }
+    });
+  } catch (err) {
+    if (err instanceof BookingConflict) {
+      blocker.rooms = fromRooms;
+      return back(res, to, { err: err.message });
+    }
+    throw err;
+  }
+
+  const tierWarning = await tierConflict({
+    roomIds: targetRooms,
+    checkIn: blocker.checkIn,
+    checkOut: blocker.checkOut,
+    tier: blocker.tier,
+    excludeId: blocker._id
+  });
+
+  back(res, to, {
+    msg:
+      `${blocker.guestName} moved, and this stay now runs to ${newOut.toISOString().slice(0, 10)}.` +
+      (tierWarning ? ` ${tierWarning}` : '')
   });
 });
 
@@ -719,6 +867,7 @@ router.get('/ops/enquiries', async (req, res) => {
     page({
       title: 'Enquiries',
       active: '/ops/enquiries',
+      breadcrumb: [['Enquiries', null]],
       ...flashOf(req),
       body: `
   <div class="card">

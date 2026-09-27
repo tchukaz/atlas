@@ -43,6 +43,9 @@ const propertySchema = new Schema({
   // Whether the bedrooms may be sold to separate parties. Off means the whole
   // apartment goes to one booking or not at all.
   splittable: { type: Boolean, default: false },
+  // Structured rather than a free-text note, so occupancy can be compared
+  // across units that have a thing and units that do not.
+  amenities: [String],
   notes: String,
   active: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
@@ -121,6 +124,9 @@ const bookingSchema = new Schema({
   },
 
   referralCode: { type: String, index: true },
+  // What the guest specifically came for. If this is set, the room cannot be
+  // swapped for one that lacks it when making space for someone else.
+  requestedAmenities: [String],
   flagged: String,
   notes: String,
   // Dates moving after the fact silently changes past reports, so changes leave
@@ -175,6 +181,9 @@ const enquirySchema = new Schema({
   checkIn: { type: Date, required: true },
   checkOut: { type: Date, required: true },
   wanted: String,
+  // Which unit was actually asked for. Turn-aways attributed to a specific
+  // apartment are the clearest demand signal available at this size.
+  property: { type: Schema.Types.ObjectId, ref: 'Property' },
   tier: { type: String, enum: Object.keys(TIERS) },
   reason: { type: String, default: 'no_availability' },
   offered: String,

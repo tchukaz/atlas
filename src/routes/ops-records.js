@@ -1,19 +1,20 @@
-import fs from 'node:fs';
 import { Router } from 'express';
 import { naira } from '../config.js';
 import { esc } from '../views.js';
 import { opsPage as page, flashOf, back, pretty, todayIso } from '../views-ops.js';
 import { requireAdmin } from '../auth.js';
 import { Attachment, Booking, Property } from '../models.js';
-import { calendarStrip, day, nightsBetween } from '../availability.js';
-import { UploadRejected, diskUsage, filePath, remove, store, upload } from '../uploads.js';
+import { day, nightsBetween } from '../availability.js';
+import { UploadRejected, findOrphans, remove, store, upload } from '../uploads.js';
+import { open as openObject, usage as storageUsage } from '../storage.js';
+import { createReadStream } from 'node:fs';
 
 const router = Router();
 router.use('/ops', requireAdmin);
 
 /* ── Today's board ─────────────────────────────────────────────────────── */
 
-router.get('/ops/calendar', async (req, res) => {
+router.get('/ops/today', async (req, res) => {
   const on = req.query.on || todayIso();
   const target = day(on);
   const next = new Date(target.getTime() + 86_400_000);
@@ -67,56 +68,15 @@ router.get('/ops/calendar', async (req, res) => {
       <tbody>${list(rows, empty)}</tbody></table>
     </div>`;
 
-  const strip = await calendarStrip(target, 30);
-  const dayCell = (d) =>
-    `<div class="dcell"><span>${new Date(d).getUTCDate()}</span></div>`;
-
-  const stripHtml = strip.rows.length
-    ? `<div class="stripwrap">
-      <table class="strip">
-        <thead><tr><th class="rname"></th>${strip.days.map((d) => `<th>${dayCell(d)}</th>`).join('')}</tr></thead>
-        <tbody>
-          ${strip.rows
-            .map(
-              (row) => `<tr>
-            <th class="rname">${esc(row.room.property?.name || '')}<br/>
-              <span class="muted" style="font-weight:400;">${esc(row.room.name)}</span></th>
-            ${row.cells
-              .map(
-                (c) =>
-                  `<td class="${c.booking ? 'busy-cell' : 'free-cell'}"${
-                    c.booking ? ` title="${esc(c.booking.guestName)} · ${c.booking.tier}"` : ''
-                  }></td>`
-              )
-              .join('')}
-          </tr>`
-            )
-            .join('')}
-        </tbody>
-      </table>
-    </div>`
-    : '<p class="muted">No bedrooms set up yet.</p>';
-
   res.type('html').send(
     page({
       title: 'Today',
-      active: '/ops/calendar',
+      active: '/ops/today',
+      breadcrumb: [['Today', null]],
       ...flashOf(req),
-      extraCss: `
-        .stripwrap { overflow-x:auto; }
-        .strip { border-collapse:collapse; font-size:11px; }
-        .strip th, .strip td { border:1px solid rgba(245,240,232,0.08); padding:0; }
-        .strip th.rname { text-align:left; padding:6px 10px; white-space:nowrap;
-                          position:sticky; left:0; background:var(--dark); z-index:1;
-                          font-size:11px; letter-spacing:0; text-transform:none; color:var(--cream); }
-        .strip thead th { color:var(--muted); }
-        .dcell { width:20px; text-align:center; padding:4px 0; }
-        .free-cell { background:rgba(127,168,107,0.18); height:26px; min-width:20px; }
-        .busy-cell { background:rgba(201,168,76,0.55); height:26px; min-width:20px; }
-      `,
       body: `
   <div class="card">
-    <form method="get" action="/ops/calendar" class="grid">
+    <form method="get" action="/ops/today" class="grid">
       <div><label>Date</label><input name="on" type="date" value="${esc(on)}"/></div>
       <div><button type="submit" class="ghost">Show</button></div>
     </form>
@@ -125,18 +85,10 @@ router.get('/ops/calendar', async (req, res) => {
   ${table('Departing', departures, 'No departures.')}
   ${table('In house', inHouse, 'Nobody in house.')}
 
-  <h2 id="strip">Next 30 nights</h2>
-  <div class="card">
-    <p class="muted" style="font-size:13px;margin-bottom:14px;">
-      Gold is booked, green is free. Gaps between stays are the nights worth selling —
-      hover a cell to see who is in it.
-    </p>
-    ${stripHtml}
-  </div>
-
   <p class="muted" style="font-size:13px;">
     Premium means the generator runs through an outage. Standard runs the inverter, which does not
     power AC — worth knowing before the grid drops.
+    <a href="/ops/calendar">See the whole month</a>.
   </p>`
     })
   );
@@ -154,20 +106,26 @@ router.get('/ops/records', async (req, res) => {
     Attachment.find(filter).sort('-uploadedAt').limit(200).populate('booking').populate('property').lean(),
     Booking.find().sort({ checkIn: -1 }).limit(100).lean(),
     Property.find().sort('name').lean(),
-    diskUsage()
+    storageUsage()
   ]);
+
+  const orphans = await findOrphans(items);
+  const missing = new Set(orphans.map((o) => String(o._id)));
 
   const tiles = items.length
     ? items
         .map(
           (a) => `<figure>
       ${
-        a.kind === 'image'
-          ? `<a href="/ops/records/file/${esc(a.filename)}" target="_blank" rel="noopener">
-               <img src="/ops/records/file/${esc(a.thumbname || a.filename)}" alt="${esc(a.title || 'record')}" loading="lazy"/>
-             </a>`
-          : `<a href="/ops/records/file/${esc(a.filename)}" target="_blank" rel="noopener"
-                style="display:block;height:130px;display:flex;align-items:center;justify-content:center;">PDF</a>`
+        missing.has(String(a._id))
+          ? `<div style="height:130px;display:flex;align-items:center;justify-content:center;
+                         color:#C4553D;font-size:12px;text-align:center;padding:0 10px;">File missing</div>`
+          : a.kind === 'image'
+            ? `<a href="/ops/records/file/${esc(a.filename)}" target="_blank" rel="noopener">
+                 <img src="/ops/records/file/${esc(a.thumbname || a.filename)}" alt="${esc(a.title || 'record')}" loading="lazy"/>
+               </a>`
+            : `<a href="/ops/records/file/${esc(a.filename)}" target="_blank" rel="noopener"
+                  style="height:130px;display:flex;align-items:center;justify-content:center;">PDF</a>`
       }
       <figcaption>
         ${a.title ? `<strong style="color:#F5F0E8;">${esc(a.title)}</strong><br/>` : ''}
@@ -192,6 +150,7 @@ router.get('/ops/records', async (req, res) => {
     page({
       title: 'Records',
       active: '/ops/records',
+      breadcrumb: [['Records', null]],
       ...flashOf(req),
       body: `
   <div class="card">
@@ -227,7 +186,21 @@ router.get('/ops/records', async (req, res) => {
 
   <div class="card">
     <p class="muted" style="font-size:13px;margin:0;">
-      ${usage.files} file(s) · ${(usage.bytes / 1048576).toFixed(1)} MB on disk.
+      Stored on ${esc(usage.where)}${
+        usage.files === null
+          ? ` (bucket ${esc(usage.bucket)})`
+          : ` — ${usage.files} file(s), ${(usage.bytes / 1048576).toFixed(1)} MB`
+      }.
+      ${
+        orphans.length
+          ? `<br/><span style="color:#C4553D;">${orphans.length} record(s) point at a file that is
+             no longer there.</span>
+             <form method="post" action="/ops/records/prune" style="display:inline;margin-left:8px;"
+                   onsubmit="return confirm('Remove ${orphans.length} record(s) whose file is missing?');">
+               <button type="submit" class="ghost">Clear them</button>
+             </form>`
+          : ''
+      }
       ${req.query.booking || req.query.property || req.query.tag ? '<a href="/ops/records">Clear filter</a>' : ''}
     </p>
   </div>
@@ -302,14 +275,32 @@ router.post('/ops/records', upload.array('files', 10), async (req, res) => {
 
 // Served through this authenticated route, never as static files: the upload
 // directory holds guest identity documents whatever the stated purpose.
-router.get('/ops/records/file/:name', (req, res) => {
+router.get('/ops/records/file/:name', async (req, res) => {
   const name = String(req.params.name);
   if (!/^[a-f0-9]{24}(_t)?\.(jpg|pdf)$/.test(name)) return res.status(400).end();
-  const target = filePath(name);
-  if (!fs.existsSync(target)) return res.status(404).end();
-  // Not cached: these are guest identity documents as often as apartment photos,
-  // and a shared office browser should not keep serving them after sign-out.
-  res.set('Cache-Control', 'no-store, private').sendFile(target);
+
+  const found = await openObject(name);
+  if (!found) return res.status(404).end();
+
+  // Proxied rather than handed out as a public URL, and never cached: these are
+  // guest identity documents as often as apartment photos, and a shared office
+  // browser should not keep serving them after sign-out.
+  res.set('Cache-Control', 'no-store, private');
+  if (found.kind === 'path') return res.sendFile(found.path);
+
+  res.set('Content-Type', found.contentType || 'application/octet-stream');
+  if (found.length) res.set('Content-Length', found.length);
+  const { Readable } = await import('node:stream');
+  Readable.fromWeb(found.stream).pipe(res);
+});
+
+router.post('/ops/records/prune', async (req, res) => {
+  const all = await Attachment.find().lean();
+  const orphans = await findOrphans(all);
+  if (orphans.length) {
+    await Attachment.deleteMany({ _id: { $in: orphans.map((o) => o._id) } });
+  }
+  back(res, '/ops/records', { msg: `Cleared ${orphans.length} record(s) with no file.` });
 });
 
 router.post('/ops/records/delete', async (req, res) => {
@@ -384,6 +375,7 @@ router.get('/ops/reports', async (req, res) => {
     page({
       title: 'Reports',
       active: '/ops/reports',
+      breadcrumb: [['Reports', null]],
       ...flashOf(req),
       body: `
   <div class="card">

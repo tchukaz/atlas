@@ -20,11 +20,10 @@ export const IMAGE = {
   quality: Number(process.env.IMAGE_QUALITY) || 80,
   thumbWidth: 320,
   maxUploadBytes: Number(process.env.MAX_UPLOAD_MB || 15) * 1024 * 1024,
-  // PDFs are stored as sent — nothing here re-encodes them, and pretending
-  // otherwise produced an 11MB "compressed" to 10.9MB. A scanned document is
-  // images in a wrapper, so photographing it instead is both smaller and
-  // easier; the cap keeps the occasional real document possible.
-  maxPdfBytes: Number(process.env.MAX_PDF_MB || 5) * 1024 * 1024
+  // PDFs are stored as sent — nothing re-encodes them, which is why an 11MB
+  // scan "compressed" to 10.9MB. Photographing a document instead genuinely
+  // shrinks it; the cap keeps the occasional real document possible.
+  maxPdfBytes: Number(process.env.MAX_PDF_MB || 2) * 1024 * 1024,
 };
 
 // Rotating this invalidates every logged visitor fingerprint, which is the point:
@@ -67,3 +66,10 @@ export function daysLeft() {
 }
 
 export const challengeOver = () => daysLeft() === 0;
+
+export const R2 = {
+  accountId: process.env.R2_ACCOUNT_ID || '',
+  bucket: process.env.R2_BUCKET || '',
+  accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+  secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || ''
+};

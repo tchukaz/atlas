@@ -222,6 +222,93 @@ export async function calendarStrip(from, nights = 30) {
 export class BookingConflict extends Error {}
 
 /**
+ * When an extension is blocked, work out whether the booking in the way could
+ * simply be housed elsewhere — turning a refusal into a booking.
+ *
+ * Only offers to move guests who have not arrived: relocating someone mid-stay
+ * is a different and much worse thing to do. A guest who asked for a specific
+ * amenity keeps it, since that is what they came for. The admin decides.
+ */
+export async function relocationOptions({ booking, from, to }) {
+  const blockers = await Booking.find({
+    _id: { $ne: booking._id },
+    status: { $in: BLOCKING_STATUSES },
+    rooms: { $in: booking.rooms },
+    checkIn: { $lt: day(to) },
+    checkOut: { $gt: day(from) }
+  })
+    .populate({ path: 'rooms', populate: { path: 'property' } })
+    .lean();
+
+  if (!blockers.length) return { blockers: [], movable: [], blocked: [] };
+
+  const movable = [];
+  const blocked = [];
+
+  for (const blocker of blockers) {
+    if (blocker.status !== 'confirmed') {
+      blocked.push({ blocker, why: `${blocker.guestName} has already checked in.` });
+      continue;
+    }
+
+    // Everything free for the whole of the blocker's own stay, excluding both
+    // the rooms it currently holds and the ones being extended into.
+    const busy = await busyRoomIds(blocker.checkIn, blocker.checkOut, { excludeId: blocker._id });
+    const held = new Set(booking.rooms.map(String));
+    const current = new Set(blocker.rooms.map((r) => String(r._id)));
+
+    const [rooms, properties] = await Promise.all([
+      Room.find({ active: true }).lean(),
+      Property.find({ active: true }).lean()
+    ]);
+    const propertyById = new Map(properties.map((p) => [String(p._id), p]));
+
+    const wanted = blocker.requestedAmenities || [];
+    const free = rooms.filter((r) => {
+      const id = String(r._id);
+      if (busy.has(id) || held.has(id) || current.has(id)) return false;
+      const property = propertyById.get(String(r.property));
+      if (!property) return false;
+      // A guest who booked for the snooker table does not get moved away from it.
+      return wanted.every((a) => (property.amenities || []).includes(a));
+    });
+
+    const needed = blocker.rooms.length;
+    const byProperty = new Map();
+    for (const room of free) {
+      const key = String(room.property);
+      if (!byProperty.has(key)) byProperty.set(key, []);
+      byProperty.get(key).push(room);
+    }
+
+    // A whole-apartment booking has to land in a whole apartment, not a spare
+    // bedroom somewhere.
+    const candidates = [];
+    for (const [propertyId, group] of byProperty) {
+      if (group.length < needed) continue;
+      const property = propertyById.get(propertyId);
+      candidates.push({
+        property,
+        rooms: group.slice(0, needed),
+        label: `${property.name} · ${group.slice(0, needed).map((r) => r.name).join(' + ')}`
+      });
+    }
+
+    if (candidates.length) movable.push({ blocker, candidates });
+    else {
+      blocked.push({
+        blocker,
+        why: wanted.length
+          ? `Nothing else free for ${blocker.guestName}'s dates has ${wanted.join(', ')}.`
+          : `Nothing else is free for ${blocker.guestName}'s dates.`
+      });
+    }
+  }
+
+  return { blockers, movable, blocked };
+}
+
+/**
  * How far a stay can run before it hits the next booking on the same rooms.
  * Returning the limit rather than a bare refusal lets ops offer the guest the
  * nights that do exist.

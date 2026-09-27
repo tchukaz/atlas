@@ -11,7 +11,7 @@ router.use('/ops', requireAdmin);
 
 /* ── Inventory ─────────────────────────────────────────────────────────── */
 
-router.get('/ops/inventory', async (req, res) => {
+router.get('/ops/setup', async (req, res) => {
   const [properties, rooms, products] = await Promise.all([
     Property.find().sort('name').lean(),
     Room.find().lean(),
@@ -31,16 +31,17 @@ router.get('/ops/inventory', async (req, res) => {
           const own = roomsBy.get(String(p._id)) || [];
           return `<tr${p.active ? '' : ' style="opacity:0.45;"'}>
         <td><strong>${esc(p.name)}</strong>${p.active ? '' : ' <span class="muted">(inactive)</span>'}
+            ${(p.amenities || []).length ? `<br/>${p.amenities.map((a) => `<span class="pill">${esc(a)}</span>`).join(' ')}` : ''}
             ${p.notes ? `<br/><span class="muted" style="font-size:11px;">${esc(p.notes)}</span>` : ''}</td>
         <td class="num">${p.bedrooms}</td>
         <td>${own.map((r) => `<span class="pill">${esc(r.name)}</span>`).join(' ') || '<span class="muted">none</span>'}</td>
         <td><span class="pill ${p.splittable ? 'on' : ''}">${p.splittable ? 'Splittable' : 'Whole only'}</span></td>
         <td>
-          <form method="post" action="/ops/inventory/toggle-split" style="display:inline;">
+          <form method="post" action="/ops/setup/toggle-split" style="display:inline;">
             <input type="hidden" name="id" value="${p._id}"/>
             <button type="submit" class="ghost">${p.splittable ? 'Lock whole' : 'Allow split'}</button>
           </form>
-          <form method="post" action="/ops/inventory/toggle-active" style="display:inline;">
+          <form method="post" action="/ops/setup/toggle-active" style="display:inline;">
             <input type="hidden" name="id" value="${p._id}"/>
             <button type="submit" class="ghost">${p.active ? 'Deactivate' : 'Reactivate'}</button>
           </form>
@@ -71,8 +72,9 @@ router.get('/ops/inventory', async (req, res) => {
 
   res.type('html').send(
     page({
-      title: 'Inventory',
-      active: '/ops/inventory',
+      title: 'Setup',
+      active: '/ops/setup',
+      breadcrumb: [['Setup', null]],
       ...flashOf(req),
       body: `
   <div class="card scroll">
@@ -87,7 +89,7 @@ router.get('/ops/inventory', async (req, res) => {
       Bedrooms are created automatically and are what bookings actually hold. Allow splitting only
       where you are willing to put unrelated guests in the same apartment.
     </p>
-    <form method="post" action="/ops/inventory" class="grid">
+    <form method="post" action="/ops/setup" class="grid">
       <div><label>Name</label><input name="name" required placeholder="Apartment A"/></div>
       <div><label>Bedrooms</label><input name="bedrooms" type="number" min="1" max="6" value="2"/></div>
       <div><label>Sold as</label>
@@ -95,6 +97,7 @@ router.get('/ops/inventory', async (req, res) => {
           <option value="">Whole apartment only</option>
           <option value="1">Whole or by the bedroom</option>
         </select></div>
+      <div><label>Amenities</label><input name="amenities" placeholder="ps5, snooker, pool"/></div>
       <div><label>Note</label><input name="notes" placeholder="optional"/></div>
       <div><button type="submit">Add</button></div>
     </form>
@@ -133,16 +136,21 @@ router.get('/ops/inventory', async (req, res) => {
   );
 });
 
-router.post('/ops/inventory', async (req, res) => {
-  const { name, bedrooms, splittable, notes } = req.body || {};
+router.post('/ops/setup', async (req, res) => {
+  const { name, bedrooms, splittable, notes, amenities } = req.body || {};
   const count = Math.max(1, Math.min(6, Math.trunc(Number(bedrooms) || 1)));
   const clean = String(name || '').trim().slice(0, 60);
-  if (!clean) return back(res, '/ops/inventory', { err: 'An apartment needs a name.' });
+  if (!clean) return back(res, '/ops/setup', { err: 'An apartment needs a name.' });
 
   const property = await Property.create({
     name: clean,
     bedrooms: count,
     splittable: Boolean(splittable),
+    amenities: String(amenities || '')
+      .split(',')
+      .map((a) => a.trim().toLowerCase())
+      .filter(Boolean)
+      .slice(0, 12),
     notes: String(notes || '').trim().slice(0, 200)
   });
 
@@ -153,19 +161,19 @@ router.post('/ops/inventory', async (req, res) => {
     }))
   );
 
-  back(res, '/ops/inventory', { msg: `${clean} added with ${count} bedroom(s).` });
+  back(res, '/ops/setup', { msg: `${clean} added with ${count} bedroom(s).` });
 });
 
-router.post('/ops/inventory/toggle-split', async (req, res) => {
+router.post('/ops/setup/toggle-split', async (req, res) => {
   const property = await Property.findById(req.body?.id);
   if (property) {
     property.splittable = !property.splittable;
     await property.save();
   }
-  back(res, '/ops/inventory', { msg: 'Updated.' });
+  back(res, '/ops/setup', { msg: 'Updated.' });
 });
 
-router.post('/ops/inventory/toggle-active', async (req, res) => {
+router.post('/ops/setup/toggle-active', async (req, res) => {
   const property = await Property.findById(req.body?.id);
   if (property) {
     property.active = !property.active;
@@ -174,13 +182,13 @@ router.post('/ops/inventory/toggle-active', async (req, res) => {
     // which is why nothing here deletes.
     await Room.updateMany({ property: property._id }, { $set: { active: property.active } });
   }
-  back(res, '/ops/inventory', { msg: 'Updated.' });
+  back(res, '/ops/setup', { msg: 'Updated.' });
 });
 
 router.post('/ops/products', async (req, res) => {
   const { name, shape, tier, bedrooms, referenceRate } = req.body || {};
   const clean = String(name || '').trim().slice(0, 80);
-  if (!clean) return back(res, '/ops/inventory', { err: 'A product needs a name.' });
+  if (!clean) return back(res, '/ops/setup', { err: 'A product needs a name.' });
   await Product.create({
     name: clean,
     shape: SHAPES[shape] ? shape : 'entire',
@@ -188,7 +196,7 @@ router.post('/ops/products', async (req, res) => {
     bedrooms: Math.max(1, Math.trunc(Number(bedrooms) || 1)),
     referenceRate: Math.max(0, Math.trunc(Number(referenceRate) || 0))
   });
-  back(res, '/ops/inventory', { msg: `${clean} added.` });
+  back(res, '/ops/setup', { msg: `${clean} added.` });
 });
 
 router.post('/ops/products/toggle', async (req, res) => {
@@ -197,7 +205,7 @@ router.post('/ops/products/toggle', async (req, res) => {
     product.active = !product.active;
     await product.save();
   }
-  back(res, '/ops/inventory', { msg: 'Updated.' });
+  back(res, '/ops/setup', { msg: 'Updated.' });
 });
 
 export default router;

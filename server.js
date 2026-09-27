@@ -12,6 +12,7 @@ import adminRoutes from './src/routes/admin.js';
 import opsRoutes from './src/routes/ops.js';
 import opsBookingRoutes from './src/routes/ops-bookings.js';
 import opsRecordRoutes from './src/routes/ops-records.js';
+import opsCalendarRoutes from './src/routes/ops-calendar.js';
 
 const ROOT = process.cwd();
 const app = express();
@@ -31,12 +32,17 @@ app.use(leaderboardRoutes);
 app.use(adminRoutes);
 app.use(opsRoutes);
 app.use(opsBookingRoutes);
+app.use(opsCalendarRoutes);
 app.use(opsRecordRoutes);
 
 // Served by allowlist rather than by mounting the repo root: .env, src/ and the
 // whole of data/ — which now holds guest records and uploads — sit beside the
 // marketing site on disk.
 app.use('/assets', express.static(path.join(ROOT, 'assets'), { maxAge: '1d', redirect: false }));
+
+// Paths that moved when the dashboard was reorganised.
+app.get('/ops', (_req, res) => res.redirect(302, '/ops/today'));
+app.get('/ops/inventory', (_req, res) => res.redirect(301, '/ops/setup'));
 
 app.get('/', (_req, res) => res.sendFile(path.join(ROOT, 'index.html')));
 

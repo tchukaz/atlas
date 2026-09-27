@@ -1,13 +1,8 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import multer from 'multer';
 import sharp from 'sharp';
-import { IMAGE, UPLOAD_DIR } from './config.js';
-
-const ROOT = path.isAbsolute(UPLOAD_DIR) ? UPLOAD_DIR : path.join(process.cwd(), UPLOAD_DIR);
-
-await fs.mkdir(ROOT, { recursive: true });
+import { IMAGE } from './config.js';
+import { exists, put, remove as removeObject } from './storage.js';
 
 const IMAGE_TYPES = new Set([
   'image/jpeg',
@@ -15,14 +10,14 @@ const IMAGE_TYPES = new Set([
   'image/webp',
   'image/gif',
   'image/avif',
-  // iPhones shoot HEIC by default. sharp's build here decodes it, so these are
+  // iPhones shoot HEIC by default and this sharp build decodes it, so these are
   // re-encoded to JPEG like anything else rather than rejected at the door.
   'image/heic',
   'image/heif'
 ]);
 const FILE_TYPES = new Set(['application/pdf']);
 
-// Held in memory so nothing untrusted is written to disk before it has been
+// Held in memory so nothing untrusted is written anywhere before it has been
 // re-encoded — which also strips EXIF, including the GPS coordinates phones
 // attach to photos.
 export const upload = multer({
@@ -39,35 +34,26 @@ export const upload = multer({
   }
 });
 
-export const filePath = (name) => path.join(ROOT, path.basename(name));
-
-/**
- * Phone photos arrive at 3–8MB each. Left alone they fill the disk and make
- * every gallery page crawl, so everything is re-encoded to a sane width and a
- * thumbnail is kept for listings.
- */
 export class UploadRejected extends Error {}
 
 export async function store(file) {
   const id = crypto.randomBytes(12).toString('hex');
+  const isPdf =
+    FILE_TYPES.has(file.mimetype) ||
+    (/\.pdf$/i.test(file.originalname || '') && !IMAGE_TYPES.has(file.mimetype));
 
-  if (FILE_TYPES.has(file.mimetype)) {
+  if (isPdf) {
     if (file.buffer.length > IMAGE.maxPdfBytes) {
       throw new UploadRejected(
-        `PDFs are kept as they arrive — nothing shrinks them — so they are capped at ` +
+        `PDFs are stored as they arrive — nothing shrinks them — so they are capped at ` +
           `${Math.round(IMAGE.maxPdfBytes / 1048576)}MB. "${file.originalname}" is ` +
           `${(file.buffer.length / 1048576).toFixed(1)}MB. Photograph the document instead and it ` +
           `will compress to a fraction of that.`
       );
     }
     const filename = `${id}.pdf`;
-    await fs.writeFile(filePath(filename), file.buffer);
-    return { kind: 'file', filename, mimetype: file.mimetype, bytes: file.buffer.length };
-  }
-
-  const isPdfByName = /\.pdf$/i.test(file.originalname || '');
-  if (isPdfByName && !IMAGE_TYPES.has(file.mimetype)) {
-    return store({ ...file, mimetype: 'application/pdf' });
+    await put(filename, file.buffer, 'application/pdf');
+    return { kind: 'file', filename, mimetype: 'application/pdf', bytes: file.buffer.length };
   }
 
   const filename = `${id}.jpg`;
@@ -85,10 +71,7 @@ export async function store(file) {
     .jpeg({ quality: 70 })
     .toBuffer();
 
-  await Promise.all([
-    fs.writeFile(filePath(filename), resized),
-    fs.writeFile(filePath(thumbname), thumb)
-  ]);
+  await Promise.all([put(filename, resized, 'image/jpeg'), put(thumbname, thumb, 'image/jpeg')]);
 
   return {
     kind: 'image',
@@ -102,16 +85,19 @@ export async function store(file) {
 
 export async function remove(attachment) {
   for (const name of [attachment.filename, attachment.thumbname].filter(Boolean)) {
-    await fs.unlink(filePath(name)).catch(() => {});
+    await removeObject(name);
   }
 }
 
-export async function diskUsage() {
-  const names = await fs.readdir(ROOT).catch(() => []);
-  let bytes = 0;
-  for (const name of names) {
-    const stat = await fs.stat(path.join(ROOT, name)).catch(() => null);
-    if (stat?.isFile()) bytes += stat.size;
+/**
+ * Records whose file is no longer there. Deleting the upload directory once
+ * left rows pointing at nothing and rendering as broken images forever; this
+ * makes that visible and fixable instead.
+ */
+export async function findOrphans(attachments) {
+  const orphans = [];
+  for (const a of attachments) {
+    if (!(await exists(a.filename))) orphans.push(a);
   }
-  return { files: names.length, bytes };
+  return orphans;
 }
