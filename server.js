@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'node:path';
 import { PORT } from './src/config.js';
-import { connect } from './src/db.js';
+import { connect, mongoose } from './src/db.js';
 import { ensureOwner, loadUser } from './src/auth.js';
 import { startRetentionSchedule } from './src/retention.js';
 import { startReminderSchedule } from './src/reminders.js';
@@ -48,6 +48,13 @@ app.use(opsRecordRoutes);
 // whole of data/ — which now holds guest records and uploads — sit beside the
 // marketing site on disk.
 app.use('/assets', express.static(path.join(ROOT, 'assets'), { maxAge: '1d', redirect: false }));
+
+// Fly restarts the machine when this stops answering. It reports the database
+// too: a process that is up but cannot reach Mongo serves nothing useful.
+app.get('/healthz', (_req, res) => {
+  const ready = mongoose.connection.readyState === 1;
+  res.status(ready ? 200 : 503).json({ ok: ready, db: ready ? 'connected' : 'unavailable' });
+});
 
 // Paths that moved when the dashboard was reorganised.
 app.get('/ops', (_req, res) => res.redirect(302, '/ops/today'));

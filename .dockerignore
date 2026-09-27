@@ -1,0 +1,13 @@
+node_modules
+.git
+.github
+data
+test
+scripts
+.env
+.env.*
+!.env.example
+*.log
+.srv*
+.mongo*
+README.md

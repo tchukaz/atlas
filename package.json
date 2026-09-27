@@ -12,7 +12,8 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test": "node --test --test-concurrency=1 test/unit.test.js test/booking.test.js",
-    "test:unit": "node --test test/unit.test.js"
+    "test:unit": "node --test test/unit.test.js",
+    "r2:check": "node scripts/check-r2.mjs"
   },
   "dependencies": {
     "aws4fetch": "^1.0.20",
