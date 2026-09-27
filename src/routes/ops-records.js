@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { naira } from '../config.js';
 import { esc } from '../views.js';
 import { opsPage as page, flashOf, back, pretty, todayIso } from '../views-ops.js';
-import { requireAdmin } from '../auth.js';
+import { requireAuth, requireCan, record } from '../auth.js';
+import { can, money } from '../permissions.js';
 import { Attachment, Booking, Property } from '../models.js';
 import { day, nightsBetween } from '../availability.js';
 import { UploadRejected, findOrphans, remove, store, upload } from '../uploads.js';
@@ -10,11 +11,11 @@ import { open as openObject, usage as storageUsage } from '../storage.js';
 import { createReadStream } from 'node:fs';
 
 const router = Router();
-router.use('/ops', requireAdmin);
+router.use('/ops', requireAuth);
 
 /* ── Today's board ─────────────────────────────────────────────────────── */
 
-router.get('/ops/today', async (req, res) => {
+router.get('/ops/today', requireCan('bookings.view'), async (req, res) => {
   const on = req.query.on || todayIso();
   const target = day(on);
   const next = new Date(target.getTime() + 86_400_000);
@@ -55,7 +56,11 @@ router.get('/ops/today', async (req, res) => {
             <span class="muted" style="font-size:11px;">${esc(b.guestPhone || '')}</span></td>
         <td data-h="Where">${esc(where(b))}</td>
         <td data-h="Tier"><span class="pill ${b.tier === 'premium' ? 'on' : ''}">${b.tier}</span></td>
-        <td data-h="Balance" class="num">${due ? `<span class="busy">${naira(due)} due</span>` : '<span class="free">settled</span>'}</td>
+        <td data-h="Balance" class="num">${
+          can(req.user, 'money.view')
+            ? due ? `<span class="busy">${naira(due)} due</span>` : '<span class="free">settled</span>'
+            : '—'
+        }</td>
       </tr>`;
           })
           .join('')
@@ -72,6 +77,7 @@ router.get('/ops/today', async (req, res) => {
     page({
       title: 'Today',
       active: '/ops/today',
+      user: req.user,
       breadcrumb: [['Today', null]],
       ...flashOf(req),
       body: `
@@ -96,7 +102,7 @@ router.get('/ops/today', async (req, res) => {
 
 /* ── Records portal ────────────────────────────────────────────────────── */
 
-router.get('/ops/records', async (req, res) => {
+router.get('/ops/records', requireCan('records.view'), async (req, res) => {
   const filter = {};
   if (req.query.booking) filter.booking = req.query.booking;
   if (req.query.property) filter.property = req.query.property;
@@ -109,11 +115,13 @@ router.get('/ops/records', async (req, res) => {
     storageUsage()
   ]);
 
-  const orphans = await findOrphans(items);
+  const visible = can(req.user, 'records.sensitive') ? items : items.filter((a) => !a.sensitive);
+  const hiddenCount = items.length - visible.length;
+  const orphans = await findOrphans(visible);
   const missing = new Set(orphans.map((o) => String(o._id)));
 
-  const tiles = items.length
-    ? items
+  const tiles = visible.length
+    ? visible
         .map(
           (a) => `<figure>
       ${
@@ -150,7 +158,8 @@ router.get('/ops/records', async (req, res) => {
     page({
       title: 'Records',
       active: '/ops/records',
-      breadcrumb: [['Records', null]],
+      user: req.user,
+      breadcrumb: [['More', '#more'], ['Records', null]],
       ...flashOf(req),
       body: `
   <div class="card">
@@ -192,6 +201,11 @@ router.get('/ops/records', async (req, res) => {
           : ` — ${usage.files} file(s), ${(usage.bytes / 1048576).toFixed(1)} MB`
       }.
       ${
+        hiddenCount
+          ? `<br/><span class="muted">${hiddenCount} record(s) marked as identity details are hidden from your role.</span>`
+          : ''
+      }
+      ${
         orphans.length
           ? `<br/><span style="color:#C4553D;">${orphans.length} record(s) point at a file that is
              no longer there.</span>
@@ -210,7 +224,7 @@ router.get('/ops/records', async (req, res) => {
   );
 });
 
-router.post('/ops/records', upload.array('files', 10), async (req, res) => {
+router.post('/ops/records', requireCan('records.upload'), upload.array('files', 10), async (req, res) => {
   const files = req.files || [];
   const returnTo = String(req.body?.returnTo || '').startsWith('/ops/')
     ? String(req.body.returnTo)
@@ -275,9 +289,22 @@ router.post('/ops/records', upload.array('files', 10), async (req, res) => {
 
 // Served through this authenticated route, never as static files: the upload
 // directory holds guest identity documents whatever the stated purpose.
-router.get('/ops/records/file/:name', async (req, res) => {
+router.get('/ops/records/file/:name', requireCan('records.view'), async (req, res) => {
   const name = String(req.params.name);
   if (!/^[a-f0-9]{24}(_t)?\.(jpg|pdf)$/.test(name)) return res.status(400).end();
+
+  // Identity documents are gated separately and every view is recorded — that
+  // is the part that matters if one ever leaks.
+  const attachment = await Attachment.findOne({
+    $or: [{ filename: name }, { thumbname: name }]
+  }).lean();
+
+  if (attachment?.sensitive) {
+    if (!can(req.user, 'records.sensitive')) return res.status(403).end();
+    if (!name.includes('_t')) {
+      await record(req, 'record.sensitive_viewed', attachment.title || name);
+    }
+  }
 
   const found = await openObject(name);
   if (!found) return res.status(404).end();
@@ -294,7 +321,7 @@ router.get('/ops/records/file/:name', async (req, res) => {
   Readable.fromWeb(found.stream).pipe(res);
 });
 
-router.post('/ops/records/prune', async (req, res) => {
+router.post('/ops/records/prune', requireCan('records.delete'), async (req, res) => {
   const all = await Attachment.find().lean();
   const orphans = await findOrphans(all);
   if (orphans.length) {
@@ -303,7 +330,7 @@ router.post('/ops/records/prune', async (req, res) => {
   back(res, '/ops/records', { msg: `Cleared ${orphans.length} record(s) with no file.` });
 });
 
-router.post('/ops/records/delete', async (req, res) => {
+router.post('/ops/records/delete', requireCan('records.delete'), async (req, res) => {
   const attachment = await Attachment.findById(req.body?.id);
   if (attachment) {
     await remove(attachment);
@@ -314,7 +341,7 @@ router.post('/ops/records/delete', async (req, res) => {
 
 /* ── Reports ───────────────────────────────────────────────────────────── */
 
-router.get('/ops/reports', async (req, res) => {
+router.get('/ops/reports', requireCan('reports.view'), async (req, res) => {
   const from = day(req.query.from || new Date(Date.now() - 29 * 86_400_000));
   const to = day(req.query.to || new Date());
   const toEnd = new Date(to.getTime() + 86_400_000);
@@ -375,7 +402,8 @@ router.get('/ops/reports', async (req, res) => {
     page({
       title: 'Reports',
       active: '/ops/reports',
-      breadcrumb: [['Reports', null]],
+      user: req.user,
+      breadcrumb: [['More', '#more'], ['Reports', null]],
       ...flashOf(req),
       body: `
   <div class="card">

@@ -1,4 +1,5 @@
 import { esc, layout } from './views.js';
+import { ROLES, can } from './permissions.js';
 
 export const OPS_CSS = `
   .tabs { display:flex; gap:6px; flex-wrap:wrap; margin:22px 0 6px; align-items:flex-start; }
@@ -18,8 +19,17 @@ export const OPS_CSS = `
   .moremenu a { border:none; text-align:left; }
   .moremenu a:hover { background:rgba(201,168,76,0.12); }
   .crumbs { font-size:12px; color:var(--muted); margin:14px 0 4px; }
-  .crumbs a { color:var(--gold-light); text-decoration:none; }
+  .crumbs a, .crumbs .crumb-more { color:var(--gold-light); text-decoration:none; }
+  .crumbs .crumb-more { background:none; border:none; padding:0; font-size:12px; font-family:inherit;
+                        letter-spacing:normal; text-transform:none; cursor:pointer; font-weight:400; }
+  .crumbs .crumb-more:hover { text-decoration:underline; }
   .crumbs .sep { margin:0 7px; opacity:0.5; }
+  .opshead { display:flex; justify-content:space-between; align-items:center; gap:14px;
+             flex-wrap:wrap; }
+  .whoami { display:flex; align-items:center; gap:10px; font-size:11px; letter-spacing:0.1em;
+            text-transform:uppercase; color:var(--muted); }
+  .whoami button { background:none; border:1px solid var(--line); color:var(--muted);
+                   padding:5px 10px; font-size:10px; }
   .grid { display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); align-items:end; }
   .grid label { font-size:10px; letter-spacing:0.16em; text-transform:uppercase; color:var(--gold);
                 display:block; margin-bottom:6px; }
@@ -66,51 +76,92 @@ export const OPS_CSS = `
 
 // The daily three stay visible everywhere; the rest are things you go looking
 // for rather than live in, and on a phone seven tabs wrapped to three rows.
+// Each carries the permission that makes it worth showing.
 const PRIMARY = [
-  ['/ops/today', 'Today', 'Who arrives, leaves and is in house'],
-  ['/ops/calendar', 'Calendar', 'Every bedroom, night by night'],
-  ['/ops/bookings', 'Bookings', 'Find, create and manage stays']
+  ['/ops/today', 'Today', 'Who arrives, leaves and is in house', 'bookings.view'],
+  ['/ops/calendar', 'Calendar', 'Every bedroom, night by night', 'bookings.view'],
+  ['/ops/bookings', 'Bookings', 'Find, create and manage stays', 'bookings.view']
 ];
 
 const SECONDARY = [
-  ['/ops/enquiries', 'Enquiries', 'Dates you were asked for and could not sell'],
-  ['/ops/reports', 'Reports', 'Occupancy, revenue and demand'],
-  ['/ops/records', 'Records', 'Every photo and document'],
-  ['/ops/setup', 'Setup', 'Apartments, bedrooms and what you sell'],
-  ['/admin', 'Referrals', 'The referral challenge']
+  ['/ops/enquiries', 'Enquiries', 'Dates you were asked for and could not sell', 'enquiries.view'],
+  ['/ops/reports', 'Reports', 'Occupancy, revenue and demand', 'reports.view'],
+  ['/ops/records', 'Records', 'Every photo and document', 'records.view'],
+  ['/ops/setup', 'Setup', 'Apartments, bedrooms and what you sell', 'setup.manage'],
+  ['/admin', 'Referrals', 'The referral challenge', 'referrals.manage'],
+  ['/ops/team', 'Team', 'Who has access and what they can do', 'users.manage'],
+  ['/ops/activity', 'Activity', 'Who did what', 'users.manage'],
+  ['/ops/settings', 'Settings', 'Retention and other choices', 'settings.manage']
 ];
 
-export const tabs = (active) => {
+const allowed = (user, list) => list.filter(([, , , action]) => !action || can(user, action));
+
+export const tabs = (active, user) => {
   const link = ([href, label, hint]) =>
     `<a href="${href}" class="${href === active ? 'on' : ''}" title="${esc(hint)}">${label}</a>`;
-  const inMore = SECONDARY.some(([href]) => href === active);
-  return `<nav class="tabs">${PRIMARY.map(link).join('')}
-    <details class="more"${inMore ? ' open' : ''}>
+
+  const secondary = allowed(user, SECONDARY);
+  const inMore = secondary.some(([href]) => href === active);
+
+  // Closed on load even when the page inside it is the one showing — the
+  // breadcrumb says where you are, so the menu does not need to hang open.
+  return `<nav class="tabs">${allowed(user, PRIMARY).map(link).join('')}
+    ${
+      secondary.length
+        ? `<details class="more" id="more">
       <summary class="${inMore ? 'on' : ''}">More</summary>
-      <div class="moremenu">${SECONDARY.map(link).join('')}</div>
-    </details>
+      <div class="moremenu">${secondary.map(link).join('')}</div>
+    </details>`
+        : ''
+    }
   </nav>`;
 };
 
-const crumbs = (trail, title) => {
+// A crumb whose href is "#more" opens the More menu rather than navigating,
+// so "More › Reports" is a way back up as well as a description.
+const crumbs = (trail) => {
   if (!trail?.length) return '';
-  const parts = trail.map(([label, href]) =>
-    href ? `<a href="${href}">${esc(label)}</a>` : `<span>${esc(label)}</span>`
-  );
+  const parts = trail.map(([label, href]) => {
+    if (!href) return `<span>${esc(label)}</span>`;
+    if (href === '#more') return `<button type="button" class="crumb-more">${esc(label)}</button>`;
+    return `<a href="${href}">${esc(label)}</a>`;
+  });
   return `<div class="crumbs">${parts.join('<span class="sep">›</span>')}</div>`;
 };
 
-export const opsPage = ({ title, active, body, flash, error, extraCss = '', breadcrumb }) =>
+const whoami = (user) =>
+  user
+    ? `<div class="whoami">
+        <span>${esc(user.name)} · ${esc(ROLES[user.role]?.label || user.role)}</span>
+        <form method="post" action="/admin/logout"><button type="submit">Sign out</button></form>
+      </div>`
+    : '';
+
+export const opsPage = ({ title, active, body, flash, error, extraCss = '', breadcrumb, user }) =>
   layout({
     title: `Atlas House — ${title}`,
     extraCss: OPS_CSS + extraCss,
-    body: `<p class="eyebrow">Atlas House · Ops</p>
-      ${tabs(active)}
-      ${crumbs(breadcrumb, title)}
+    body: `<div class="opshead"><p class="eyebrow">Atlas House · Ops</p>${whoami(user)}</div>
+      ${tabs(active, user)}
+      ${crumbs(breadcrumb)}
       <h1>${esc(title)}</h1>
       ${flash ? `<div class="notice">${esc(flash)}</div>` : ''}
       ${error ? `<div class="notice bad">${esc(error)}</div>` : ''}
-      ${body}`
+      ${body}
+      <script>
+        document.querySelector('.crumb-more')?.addEventListener('click', () => {
+          const menu = document.getElementById('more');
+          if (!menu) return;
+          menu.open = !menu.open;
+          if (menu.open) menu.scrollIntoView({ block: 'nearest' });
+        });
+        document.addEventListener('click', (event) => {
+          const menu = document.getElementById('more');
+          if (menu?.open && !menu.contains(event.target) && !event.target.closest('.crumb-more')) {
+            menu.open = false;
+          }
+        });
+      </script>`
   });
 
 export const flashOf = (req) => ({

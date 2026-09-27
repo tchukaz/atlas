@@ -2,13 +2,17 @@ import express from 'express';
 import path from 'node:path';
 import { PORT } from './src/config.js';
 import { connect } from './src/db.js';
+import { ensureOwner, loadUser } from './src/auth.js';
+import { startRetentionSchedule } from './src/retention.js';
 import { startReminderSchedule } from './src/reminders.js';
 import goRoutes from './src/routes/go.js';
 import joinRoutes from './src/routes/join.js';
 import meRoutes from './src/routes/me.js';
 import pageRoutes from './src/routes/pages.js';
 import leaderboardRoutes from './src/routes/leaderboard.js';
+import authRoutes from './src/routes/auth-routes.js';
 import adminRoutes from './src/routes/admin.js';
+import opsUserRoutes from './src/routes/ops-users.js';
 import opsRoutes from './src/routes/ops.js';
 import opsBookingRoutes from './src/routes/ops-bookings.js';
 import opsRecordRoutes from './src/routes/ops-records.js';
@@ -24,12 +28,17 @@ app.disable('x-powered-by');
 
 app.use(express.urlencoded({ extended: false, limit: '32kb' }));
 
+// Resolves the signed-in staff member before any route decides what to show.
+app.use(loadUser);
+
 app.use(goRoutes);
 app.use(joinRoutes);
 app.use(meRoutes);
 app.use(pageRoutes);
 app.use(leaderboardRoutes);
+app.use(authRoutes);
 app.use(adminRoutes);
+app.use(opsUserRoutes);
 app.use(opsRoutes);
 app.use(opsBookingRoutes);
 app.use(opsCalendarRoutes);
@@ -64,9 +73,13 @@ app.use((err, _req, res, _next) => {
 const server = await connect()
   .then(() => {
     console.log('MongoDB connected.');
+    return ensureOwner();
+  })
+  .then(() => {
     return app.listen(PORT, () => {
       console.log(`Atlas House running on http://localhost:${PORT}`);
       startReminderSchedule();
+      startRetentionSchedule();
     });
   })
   .catch((err) => {

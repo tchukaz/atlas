@@ -193,6 +193,58 @@ const enquirySchema = new Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+/* ── Staff accounts ────────────────────────────────────────────────────── */
+
+const userSchema = new Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+  passwordHash: String,
+  role: { type: String, required: true, default: 'frontdesk' },
+  // Deactivated rather than deleted: the audit trail has to keep pointing at
+  // a real person.
+  active: { type: Boolean, default: true },
+  inviteToken: String,
+  inviteExpires: Date,
+  lastLoginAt: Date,
+  createdAt: { type: Date, default: Date.now }
+});
+
+// Held in the database, not in memory: sessions must survive a restart, and a
+// departing staff member's access has to be revocable.
+const sessionSchema = new Schema({
+  token: { type: String, required: true, unique: true },
+  user: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  userAgent: String,
+  createdAt: { type: Date, default: Date.now },
+  expiresAt: { type: Date, required: true }
+});
+sessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+/**
+ * Who did what. More useful than the roles themselves: you mostly trust your
+ * staff, and the question that actually comes up is who issued that refund.
+ * Views of documents flagged sensitive are recorded too.
+ */
+const auditSchema = new Schema({
+  at: { type: Date, default: Date.now, index: true },
+  actorName: String,
+  actorEmail: String,
+  action: { type: String, required: true },
+  target: String,
+  detail: String
+});
+
+const settingSchema = new Schema({
+  key: { type: String, required: true, unique: true },
+  value: Schema.Types.Mixed,
+  updatedAt: { type: Date, default: Date.now }
+});
+
+export const User = model('User', userSchema);
+export const Session = model('Session', sessionSchema);
+export const Audit = model('Audit', auditSchema);
+export const Setting = model('Setting', settingSchema);
+
 export const Enquiry = model('Enquiry', enquirySchema);
 
 export const Participant = model('Participant', participantSchema);

@@ -3,7 +3,8 @@ import { Router } from 'express';
 import { naira } from '../config.js';
 import { esc } from '../views.js';
 import { opsPage as page, flashOf, back, iso, pretty, todayIso } from '../views-ops.js';
-import { requireAdmin } from '../auth.js';
+import { requireAuth, requireCan, record } from '../auth.js';
+import { can, money } from '../permissions.js';
 import { formatPhone, normalizePhone } from '../phone.js';
 import {
   Attachment,
@@ -28,7 +29,7 @@ import {
 } from '../availability.js';
 
 const router = Router();
-router.use('/ops', requireAdmin);
+router.use('/ops', requireAuth);
 
 // Offered in the order they actually get used, rather than an order someone
 // guessed at up front.
@@ -61,7 +62,7 @@ const label = (status) => status.replace('_', ' ');
 
 /* ── List and create ───────────────────────────────────────────────────── */
 
-router.get('/ops/bookings', async (req, res) => {
+router.get('/ops/bookings', requireCan('bookings.view'), async (req, res) => {
   const checkIn = req.query.in || todayIso();
   const checkOut = req.query.out || iso(new Date(Date.now() + 86_400_000));
 
@@ -82,6 +83,7 @@ router.get('/ops/bookings', async (req, res) => {
   }
 
   const span = (s) => `${pretty(s.from)}–${pretty(s.to)}`;
+  const showMoney = can(req.user, 'money.view');
 
   // Split into what covers the whole stay and what covers part of it, so a
   // partial match reads as a counter-offer instead of a refusal.
@@ -165,9 +167,9 @@ router.get('/ops/bookings', async (req, res) => {
         <td data-h="Dates">${pretty(b.checkIn)} → ${pretty(b.checkOut)}<br/>
             <span class="muted" style="font-size:11px;">${nightsBetween(b.checkIn, b.checkOut)} night(s)</span></td>
         <td data-h="Tier"><span class="pill ${b.tier === 'premium' ? 'on' : ''}">${b.tier}</span></td>
-        <td data-h="Paid" class="num">${naira(paid)}${
-          balance ? `<br/><span class="busy" style="font-size:11px;">${naira(balance)} due</span>` : ''
-        }${depositHeld ? `<br/><span class="pill">dep ${naira(b.deposit.amount)}</span>` : ''}</td>
+        <td data-h="Paid" class="num">${money(req.user, naira(paid))}${
+          balance && showMoney ? `<br/><span class="busy" style="font-size:11px;">${naira(balance)} due</span>` : ''
+        }${depositHeld && showMoney ? `<br/><span class="pill">dep ${naira(b.deposit.amount)}</span>` : ''}</td>
         <td data-h="Status"><span class="pill ${STATUS_STYLE[b.status]}">${esc(label(b.status))}</span></td>
       </tr>`;
         })
@@ -178,6 +180,7 @@ router.get('/ops/bookings', async (req, res) => {
     page({
       title: 'Bookings',
       active: '/ops/bookings',
+      user: req.user,
       breadcrumb: [['Bookings', null]],
       ...flashOf(req),
       body: `
@@ -311,7 +314,7 @@ router.get('/ops/bookings', async (req, res) => {
   );
 });
 
-router.post('/ops/bookings', async (req, res) => {
+router.post('/ops/bookings', requireCan('bookings.create'), async (req, res) => {
   const b = req.body || {};
   const roomIds = asArray(b.rooms).filter(Boolean);
   const checkIn = day(b.checkIn);
@@ -397,7 +400,7 @@ router.post('/ops/bookings', async (req, res) => {
 
 /* ── Single booking ────────────────────────────────────────────────────── */
 
-router.get('/ops/bookings/:id', async (req, res) => {
+router.get('/ops/bookings/:id', requireCan('bookings.view'), async (req, res) => {
   const booking = await Booking.findById(req.params.id)
     .populate({ path: 'rooms', populate: { path: 'property' } })
     .populate('product');
@@ -448,13 +451,14 @@ router.get('/ops/bookings/:id', async (req, res) => {
     page({
       title: booking.guestName,
       active: '/ops/bookings',
+      user: req.user,
       breadcrumb: [['Bookings', '/ops/bookings'], [booking.reference, null]],
       ...flashOf(req),
       body: `
   <div class="card">
     <div class="stat-row">
-      <div><div class="stat-number">${naira(paid)}</div><div class="stat-label">Paid</div></div>
-      <div><div class="stat-number">${naira(balance)}</div><div class="stat-label">Balance</div></div>
+      <div><div class="stat-number">${money(req.user, naira(paid))}</div><div class="stat-label">Paid</div></div>
+      <div><div class="stat-number">${money(req.user, naira(balance))}</div><div class="stat-label">Balance</div></div>
       <div><div class="stat-number">${nightsBetween(booking.checkIn, booking.checkOut)}</div><div class="stat-label">Nights</div></div>
       <div><div class="stat-number">${booking.rooms.length}</div><div class="stat-label">Bedrooms</div></div>
     </div>
@@ -487,6 +491,7 @@ router.get('/ops/bookings/:id', async (req, res) => {
     </p>
   </div>
 
+  ${!can(req.user, 'money.view') ? '' : `
   <div class="card scroll">
     <h2 style="font-size:20px;margin-top:0;">Payments</h2>
     <table><thead><tr>
@@ -525,7 +530,7 @@ router.get('/ops/bookings/:id', async (req, res) => {
                  : ''
              }
            </div>`
-        : booking.deposit?.amount
+        : booking.deposit?.amount && can(req.user, 'payments.refund')
           ? `<form method="post" action="/ops/bookings/${booking._id}/refund" class="grid" style="margin-top:16px;">
                <div><label>Refund amount</label>
                  <input name="amount" type="number" min="0" max="${booking.deposit.amount}"
@@ -536,7 +541,7 @@ router.get('/ops/bookings/:id', async (req, res) => {
              </form>`
           : '<p class="muted" style="font-size:13px;margin-top:12px;">No deposit held.</p>'
     }
-  </div>
+  </div>`}
 
   <div class="card">
     <h2 style="font-size:20px;margin-top:0;">Change the dates</h2>
@@ -666,7 +671,7 @@ router.get('/ops/bookings/:id', async (req, res) => {
   );
 });
 
-router.get('/ops/guest-lookup', async (req, res) => {
+router.get('/ops/guest-lookup', requireCan('bookings.create'), async (req, res) => {
   const phone = normalizePhone(req.query.phone);
   if (!phone) return res.json({ found: false });
 
@@ -687,7 +692,7 @@ router.get('/ops/guest-lookup', async (req, res) => {
  * would split the payments, double the count in reports, and credit a referrer
  * twice for the same stay.
  */
-router.post('/ops/bookings/:id/dates', async (req, res) => {
+router.post('/ops/bookings/:id/dates', requireCan('bookings.edit'), async (req, res) => {
   const booking = await Booking.findById(req.params.id);
   if (!booking) return back(res, '/ops/bookings', { err: 'Booking not found.' });
 
@@ -747,7 +752,7 @@ router.post('/ops/bookings/:id/dates', async (req, res) => {
  * transaction, so the guest in the way is never relocated for an extension
  * that then fails.
  */
-router.post('/ops/bookings/:id/reshuffle', async (req, res) => {
+router.post('/ops/bookings/:id/reshuffle', requireCan('bookings.edit'), async (req, res) => {
   const booking = await Booking.findById(req.params.id);
   const blocker = await Booking.findById(req.body?.blockerId);
   const to = `/ops/bookings/${req.params.id}`;
@@ -814,7 +819,7 @@ router.post('/ops/bookings/:id/reshuffle', async (req, res) => {
 
 /* ── Turned-away enquiries ─────────────────────────────────────────────── */
 
-router.post('/ops/enquiries', async (req, res) => {
+router.post('/ops/enquiries', requireCan('enquiries.edit'), async (req, res) => {
   const b = req.body || {};
   const checkIn = day(b.checkIn);
   const checkOut = day(b.checkOut);
@@ -832,7 +837,7 @@ router.post('/ops/enquiries', async (req, res) => {
   back(res, '/ops/enquiries', { msg: 'Enquiry saved.' });
 });
 
-router.get('/ops/enquiries', async (req, res) => {
+router.get('/ops/enquiries', requireCan('enquiries.view'), async (req, res) => {
   const enquiries = await Enquiry.find().sort('-createdAt').limit(200).lean();
   const lost = enquiries.filter((e) => e.outcome !== 'converted');
   const nightsMissed = lost.reduce((n, e) => n + nightsBetween(e.checkIn, e.checkOut), 0);
@@ -867,7 +872,8 @@ router.get('/ops/enquiries', async (req, res) => {
     page({
       title: 'Enquiries',
       active: '/ops/enquiries',
-      breadcrumb: [['Enquiries', null]],
+      user: req.user,
+      breadcrumb: [['More', '#more'], ['Enquiries', null]],
       ...flashOf(req),
       body: `
   <div class="card">
@@ -891,20 +897,20 @@ router.get('/ops/enquiries', async (req, res) => {
   );
 });
 
-router.post('/ops/enquiries/outcome', async (req, res) => {
+router.post('/ops/enquiries/outcome', requireCan('enquiries.edit'), async (req, res) => {
   const outcome = ['converted', 'lost', 'open'].includes(req.body?.outcome) ? req.body.outcome : 'open';
   await Enquiry.updateOne({ _id: req.body?.id }, { $set: { outcome } });
   back(res, '/ops/enquiries', { msg: `Marked ${outcome}.` });
 });
 
-router.post('/ops/bookings/:id/status', async (req, res) => {
+router.post('/ops/bookings/:id/status', requireCan('bookings.edit'), async (req, res) => {
   const status = BOOKING_STATUSES.includes(req.body?.status) ? req.body.status : null;
   if (!status) return back(res, `/ops/bookings/${req.params.id}`, { err: 'Unknown status.' });
   await Booking.updateOne({ _id: req.params.id }, { $set: { status } });
   back(res, `/ops/bookings/${req.params.id}`, { msg: `Status set to ${label(status)}.` });
 });
 
-router.post('/ops/bookings/:id/payment', async (req, res) => {
+router.post('/ops/bookings/:id/payment', requireCan('payments.record'), async (req, res) => {
   const amount = Math.max(0, Math.trunc(Number(req.body?.amount) || 0));
   if (!amount) return back(res, `/ops/bookings/${req.params.id}`, { err: 'Enter an amount.' });
   await Booking.updateOne(
@@ -923,7 +929,7 @@ router.post('/ops/bookings/:id/payment', async (req, res) => {
   back(res, `/ops/bookings/${req.params.id}`, { msg: `${naira(amount)} recorded.` });
 });
 
-router.post('/ops/bookings/:id/payment/delete', async (req, res) => {
+router.post('/ops/bookings/:id/payment/delete', requireCan('payments.refund'), async (req, res) => {
   await Booking.updateOne(
     { _id: req.params.id },
     { $pull: { payments: { _id: req.body?.paymentId } } }
@@ -931,7 +937,7 @@ router.post('/ops/bookings/:id/payment/delete', async (req, res) => {
   back(res, `/ops/bookings/${req.params.id}`, { msg: 'Payment removed.' });
 });
 
-router.post('/ops/bookings/:id/deposit', async (req, res) => {
+router.post('/ops/bookings/:id/deposit', requireCan('payments.record'), async (req, res) => {
   const amount = Math.max(0, Math.trunc(Number(req.body?.amount) || 0));
   await Booking.updateOne(
     { _id: req.params.id },
@@ -946,7 +952,7 @@ router.post('/ops/bookings/:id/deposit', async (req, res) => {
   back(res, `/ops/bookings/${req.params.id}`, { msg: 'Deposit updated.' });
 });
 
-router.post('/ops/bookings/:id/refund', async (req, res) => {
+router.post('/ops/bookings/:id/refund', requireCan('payments.refund'), async (req, res) => {
   const booking = await Booking.findById(req.params.id);
   if (!booking) return back(res, '/ops/bookings', { err: 'Booking not found.' });
 

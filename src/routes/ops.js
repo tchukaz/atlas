@@ -2,16 +2,16 @@ import { Router } from 'express';
 import { naira } from '../config.js';
 import { esc } from '../views.js';
 import { opsPage as page, flashOf, back } from '../views-ops.js';
-import { requireAdmin } from '../auth.js';
+import { requireAuth, requireCan, record } from '../auth.js';
 import { Product, Property, Room, SHAPES, TIERS } from '../models.js';
 
 const router = Router();
-router.use('/ops', requireAdmin);
+router.use('/ops', requireAuth);
 
 
 /* ── Inventory ─────────────────────────────────────────────────────────── */
 
-router.get('/ops/setup', async (req, res) => {
+router.get('/ops/setup', requireCan('setup.manage'), async (req, res) => {
   const [properties, rooms, products] = await Promise.all([
     Property.find().sort('name').lean(),
     Room.find().lean(),
@@ -74,7 +74,8 @@ router.get('/ops/setup', async (req, res) => {
     page({
       title: 'Setup',
       active: '/ops/setup',
-      breadcrumb: [['Setup', null]],
+      user: req.user,
+      breadcrumb: [['More', '#more'], ['Setup', null]],
       ...flashOf(req),
       body: `
   <div class="card scroll">
@@ -136,7 +137,7 @@ router.get('/ops/setup', async (req, res) => {
   );
 });
 
-router.post('/ops/setup', async (req, res) => {
+router.post('/ops/setup', requireCan('setup.manage'), async (req, res) => {
   const { name, bedrooms, splittable, notes, amenities } = req.body || {};
   const count = Math.max(1, Math.min(6, Math.trunc(Number(bedrooms) || 1)));
   const clean = String(name || '').trim().slice(0, 60);
@@ -164,7 +165,7 @@ router.post('/ops/setup', async (req, res) => {
   back(res, '/ops/setup', { msg: `${clean} added with ${count} bedroom(s).` });
 });
 
-router.post('/ops/setup/toggle-split', async (req, res) => {
+router.post('/ops/setup/toggle-split', requireCan('setup.manage'), async (req, res) => {
   const property = await Property.findById(req.body?.id);
   if (property) {
     property.splittable = !property.splittable;
@@ -173,7 +174,7 @@ router.post('/ops/setup/toggle-split', async (req, res) => {
   back(res, '/ops/setup', { msg: 'Updated.' });
 });
 
-router.post('/ops/setup/toggle-active', async (req, res) => {
+router.post('/ops/setup/toggle-active', requireCan('setup.manage'), async (req, res) => {
   const property = await Property.findById(req.body?.id);
   if (property) {
     property.active = !property.active;
@@ -185,7 +186,7 @@ router.post('/ops/setup/toggle-active', async (req, res) => {
   back(res, '/ops/setup', { msg: 'Updated.' });
 });
 
-router.post('/ops/products', async (req, res) => {
+router.post('/ops/products', requireCan('setup.manage'), async (req, res) => {
   const { name, shape, tier, bedrooms, referenceRate } = req.body || {};
   const clean = String(name || '').trim().slice(0, 80);
   if (!clean) return back(res, '/ops/setup', { err: 'A product needs a name.' });
@@ -199,7 +200,7 @@ router.post('/ops/products', async (req, res) => {
   back(res, '/ops/setup', { msg: `${clean} added.` });
 });
 
-router.post('/ops/products/toggle', async (req, res) => {
+router.post('/ops/products/toggle', requireCan('setup.manage'), async (req, res) => {
   const product = await Product.findById(req.body?.id);
   if (product) {
     product.active = !product.active;

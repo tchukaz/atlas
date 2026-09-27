@@ -2,8 +2,7 @@ import { Router } from 'express';
 import { CHALLENGE, SITE_URL, daysLeft, naira, trackingLink } from '../config.js';
 import { esc, layout } from '../views.js';
 import { tabs, OPS_CSS, flashOf, back } from '../views-ops.js';
-import { closeSession, openSession, passwordMatches, requireAdmin } from '../auth.js';
-import { ADMIN_PASSWORD } from '../config.js';
+import { requireCan, record } from '../auth.js';
 import { formatPhone } from '../phone.js';
 import { runDailyNudges } from '../reminders.js';
 import {
@@ -18,56 +17,6 @@ import {
 } from '../store.js';
 
 const router = Router();
-const failures = new Map();
-
-function loginPage(message = '') {
-  return layout({
-    title: 'Atlas House — Admin',
-    body: `
-  <p class="eyebrow">Atlas House</p>
-  <h1>Sign in</h1>
-  ${message ? `<div class="notice bad" style="margin-top:20px;">${esc(message)}</div>` : ''}
-  <form method="post" action="/admin/login" class="card" style="margin-top:24px;max-width:420px;">
-    <label class="stat-label" for="password">Password</label>
-    <input id="password" name="password" type="password" autocomplete="current-password"
-           style="width:100%;margin:10px 0 18px;" required autofocus/>
-    <button type="submit">Sign in</button>
-  </form>`
-  });
-}
-
-router.get('/admin/login', (_req, res) => res.type('html').send(loginPage()));
-
-router.post('/admin/login', (req, res) => {
-  const ip = req.ip || 'unknown';
-  const record = failures.get(ip) || { count: 0, until: 0 };
-
-  if (Date.now() < record.until) {
-    return res.status(429).type('html').send(loginPage('Too many attempts. Wait a minute.'));
-  }
-  if (!ADMIN_PASSWORD) {
-    return res.status(503).type('html').send(loginPage('ADMIN_PASSWORD is not set on the server.'));
-  }
-  if (!passwordMatches(req.body?.password)) {
-    record.count += 1;
-    if (record.count >= 5) {
-      record.count = 0;
-      record.until = Date.now() + 60_000;
-    }
-    failures.set(ip, record);
-    return res.status(401).type('html').send(loginPage('Wrong password.'));
-  }
-
-  failures.delete(ip);
-  openSession(res, req.secure);
-  res.redirect(302, '/ops/today');
-});
-
-router.post('/admin/logout', (req, res) => {
-  closeSession(req, res);
-  res.redirect(302, '/admin/login');
-});
-
 async function nudgeText(row) {
   const { rank, leader } = await rankOf(row.code);
   const remaining = daysLeft();
@@ -84,7 +33,7 @@ async function nudgeText(row) {
   }Your link: ${trackingLink(row.code)}`;
 }
 
-router.get('/admin', requireAdmin, async (req, res) => {
+router.get('/admin', requireCan('referrals.manage'), async (req, res) => {
   const [rows, sum, bursts, orphans, daily] = await Promise.all([
     standings(),
     totals(),
@@ -144,7 +93,7 @@ router.get('/admin', requireAdmin, async (req, res) => {
       body: `
   <p class="eyebrow">Atlas House · Ops</p>
   <h1>Referrals</h1>
-  ${tabs('/admin')}
+  ${tabs('/admin', req.user)}
   ${flash ? `<div class="notice">${esc(flash)}</div>` : ''}
   ${error ? `<div class="notice bad">${esc(error)}</div>` : ''}
 
@@ -239,7 +188,6 @@ router.get('/admin', requireAdmin, async (req, res) => {
     </form>
   </div>
 
-  <form method="post" action="/admin/logout"><button type="submit" class="ghost">Sign out</button></form>
   <p class="muted" style="font-size:13px;margin-top:20px;">
     <a href="/leaderboard">Public standings</a> · <a href="/admin/export.csv">Export CSV</a>
   </p>
@@ -258,18 +206,18 @@ router.get('/admin', requireAdmin, async (req, res) => {
   );
 });
 
-router.post('/admin/enquiries', requireAdmin, async (req, res) => {
+router.post('/admin/enquiries', requireCan('referrals.manage'), async (req, res) => {
   await setEnquiries(req.body?.code, req.body?.enquiries);
   back(res, '/admin', { msg: `Enquiries updated for ${req.body?.code}.` });
 });
 
-router.post('/admin/status', requireAdmin, async (req, res) => {
+router.post('/admin/status', requireCan('referrals.manage'), async (req, res) => {
   const status = req.body?.status === 'disqualified' ? 'disqualified' : 'active';
   await setStatus(req.body?.code, status);
   back(res, '/admin', { msg: `${req.body?.code} is now ${status}.` });
 });
 
-router.post('/admin/nudges', requireAdmin, async (req, res) => {
+router.post('/admin/nudges', requireCan('referrals.manage'), async (req, res) => {
   const dryRun = req.body?.dryRun === '1';
   try {
     const result = await runDailyNudges({ dryRun });
@@ -284,7 +232,7 @@ router.post('/admin/nudges', requireAdmin, async (req, res) => {
   }
 });
 
-router.get('/admin/export.csv', requireAdmin, async (_req, res) => {
+router.get('/admin/export.csv', requireCan('referrals.manage'), async (_req, res) => {
   const header =
     'Name,Code,Email,Phone,Link,Clicks,Unique clicks,Enquiries,Bookings,Nights,Earned,Status';
   const cell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;

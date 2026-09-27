@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { esc } from '../views.js';
 import { opsPage as page, flashOf, iso, pretty, todayIso } from '../views-ops.js';
-import { requireAdmin } from '../auth.js';
+import { requireAuth, requireCan } from '../auth.js';
 import { calendarStrip, day } from '../availability.js';
 
 const router = Router();
-router.use('/ops', requireAdmin);
+router.use('/ops', requireAuth);
 
 // A fixed palette rather than random hues: these have to stay legible on a
 // near-black background, and adjacent stays must be told apart at a glance.
@@ -40,7 +40,7 @@ const shiftMonth = (from, months) => {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months, 1));
 };
 
-router.get('/ops/calendar', async (req, res) => {
+router.get('/ops/calendar', requireCan('bookings.view'), async (req, res) => {
   const from = day(req.query.from || todayIso());
   const nights = Math.min(90, Math.max(14, Number(req.query.nights) || 35));
   const strip = await calendarStrip(from, nights);
@@ -92,6 +92,7 @@ router.get('/ops/calendar', async (req, res) => {
     page({
       title: 'Calendar',
       active: '/ops/calendar',
+      user: req.user,
       ...flashOf(req),
       breadcrumb: [['Calendar', null]],
       extraCss: `

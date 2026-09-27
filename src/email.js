@@ -103,3 +103,22 @@ export function sendDailyNudge({ participant, rank, of, leader, daysRemaining, s
       ${button(dashboardLink(participant.token), 'See where you stand')}`)
   });
 }
+
+export function sendInvite(user, link) {
+  return send({
+    to: user.email,
+    subject: 'Your Atlas House staff account',
+    html: wrap(`
+      <h1 style="font-size:24px;font-weight:normal;margin:0 0 14px;">
+        Welcome, ${esc(user.name.split(/\s+/)[0])}
+      </h1>
+      <p style="color:#B9B2A6;font-size:15px;line-height:1.6;margin:0 0 20px;">
+        You have been given access to the Atlas House booking system. Choose your own password using
+        the link below — nobody else ever sees it.
+      </p>
+      ${button(link, 'Set your password')}
+      <p style="color:#8A8A8A;font-size:13px;line-height:1.6;margin:22px 0 0;">
+        The link works once and expires in seven days. If it has lapsed, ask for another.
+      </p>`)
+  });
+}
