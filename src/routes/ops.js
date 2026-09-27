@@ -76,7 +76,7 @@ router.get('/ops/inventory', async (req, res) => {
       ...flashOf(req),
       body: `
   <div class="card scroll">
-    <table><thead><tr>
+    <table class="stack"><thead><tr>
       <th>Apartment</th><th class="num">Beds</th><th>Bedrooms</th><th>Sold as</th><th></th>
     </tr></thead><tbody>${propertyRows}</tbody></table>
   </div>
@@ -102,7 +102,7 @@ router.get('/ops/inventory', async (req, res) => {
 
   <h2>Products</h2>
   <div class="card scroll">
-    <table><thead><tr>
+    <table class="stack"><thead><tr>
       <th>Name</th><th>Shape</th><th>Tier</th><th class="num">Reference rate</th><th></th>
     </tr></thead><tbody>${productRows}</tbody></table>
   </div>

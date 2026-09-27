@@ -5,8 +5,8 @@ import { esc } from '../views.js';
 import { opsPage as page, flashOf, back, pretty, todayIso } from '../views-ops.js';
 import { requireAdmin } from '../auth.js';
 import { Attachment, Booking, Property } from '../models.js';
-import { day, nightsBetween } from '../availability.js';
-import { diskUsage, filePath, remove, store, upload } from '../uploads.js';
+import { calendarStrip, day, nightsBetween } from '../availability.js';
+import { UploadRejected, diskUsage, filePath, remove, store, upload } from '../uploads.js';
 
 const router = Router();
 router.use('/ops', requireAdmin);
@@ -50,11 +50,11 @@ router.get('/ops/calendar', async (req, res) => {
             const paid = (b.payments || []).reduce((s, p) => s + (p.amount || 0), 0);
             const due = Math.max(0, (b.quotedAmount || 0) - paid);
             return `<tr>
-        <td><a href="/ops/bookings/${b._id}"><strong>${esc(b.guestName)}</strong></a><br/>
+        <td data-h="Guest"><a href="/ops/bookings/${b._id}"><strong>${esc(b.guestName)}</strong></a><br/>
             <span class="muted" style="font-size:11px;">${esc(b.guestPhone || '')}</span></td>
-        <td>${esc(where(b))}</td>
-        <td><span class="pill ${b.tier === 'premium' ? 'on' : ''}">${b.tier}</span></td>
-        <td class="num">${due ? `<span class="busy">${naira(due)} due</span>` : '<span class="free">settled</span>'}</td>
+        <td data-h="Where">${esc(where(b))}</td>
+        <td data-h="Tier"><span class="pill ${b.tier === 'premium' ? 'on' : ''}">${b.tier}</span></td>
+        <td data-h="Balance" class="num">${due ? `<span class="busy">${naira(due)} due</span>` : '<span class="free">settled</span>'}</td>
       </tr>`;
           })
           .join('')
@@ -63,15 +63,57 @@ router.get('/ops/calendar', async (req, res) => {
   const table = (heading, rows, empty) => `
     <h2>${heading}</h2>
     <div class="card scroll">
-      <table><thead><tr><th>Guest</th><th>Where</th><th>Tier</th><th class="num">Balance</th></tr></thead>
+      <table class="stack"><thead><tr><th>Guest</th><th>Where</th><th>Tier</th><th class="num">Balance</th></tr></thead>
       <tbody>${list(rows, empty)}</tbody></table>
     </div>`;
+
+  const strip = await calendarStrip(target, 30);
+  const dayCell = (d) =>
+    `<div class="dcell"><span>${new Date(d).getUTCDate()}</span></div>`;
+
+  const stripHtml = strip.rows.length
+    ? `<div class="stripwrap">
+      <table class="strip">
+        <thead><tr><th class="rname"></th>${strip.days.map((d) => `<th>${dayCell(d)}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${strip.rows
+            .map(
+              (row) => `<tr>
+            <th class="rname">${esc(row.room.property?.name || '')}<br/>
+              <span class="muted" style="font-weight:400;">${esc(row.room.name)}</span></th>
+            ${row.cells
+              .map(
+                (c) =>
+                  `<td class="${c.booking ? 'busy-cell' : 'free-cell'}"${
+                    c.booking ? ` title="${esc(c.booking.guestName)} · ${c.booking.tier}"` : ''
+                  }></td>`
+              )
+              .join('')}
+          </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>
+    </div>`
+    : '<p class="muted">No bedrooms set up yet.</p>';
 
   res.type('html').send(
     page({
       title: 'Today',
       active: '/ops/calendar',
       ...flashOf(req),
+      extraCss: `
+        .stripwrap { overflow-x:auto; }
+        .strip { border-collapse:collapse; font-size:11px; }
+        .strip th, .strip td { border:1px solid rgba(245,240,232,0.08); padding:0; }
+        .strip th.rname { text-align:left; padding:6px 10px; white-space:nowrap;
+                          position:sticky; left:0; background:var(--dark); z-index:1;
+                          font-size:11px; letter-spacing:0; text-transform:none; color:var(--cream); }
+        .strip thead th { color:var(--muted); }
+        .dcell { width:20px; text-align:center; padding:4px 0; }
+        .free-cell { background:rgba(127,168,107,0.18); height:26px; min-width:20px; }
+        .busy-cell { background:rgba(201,168,76,0.55); height:26px; min-width:20px; }
+      `,
       body: `
   <div class="card">
     <form method="get" action="/ops/calendar" class="grid">
@@ -82,6 +124,15 @@ router.get('/ops/calendar', async (req, res) => {
   ${table(`Arriving · ${pretty(target)}`, arrivals, 'No arrivals.')}
   ${table('Departing', departures, 'No departures.')}
   ${table('In house', inHouse, 'Nobody in house.')}
+
+  <h2 id="strip">Next 30 nights</h2>
+  <div class="card">
+    <p class="muted" style="font-size:13px;margin-bottom:14px;">
+      Gold is booked, green is free. Gaps between stays are the nights worth selling —
+      hover a cell to see who is in it.
+    </p>
+    ${stripHtml}
+  </div>
 
   <p class="muted" style="font-size:13px;">
     Premium means the generator runs through an outage. Standard runs the inverter, which does not
@@ -153,8 +204,7 @@ router.get('/ops/records', async (req, res) => {
     <form method="post" action="/ops/records" enctype="multipart/form-data">
       <div class="grid">
         <div><label>Files</label><input type="file" name="files" multiple required
-             accept="image/*,application/pdf"/></div>
-        <div><label>Title</label><input name="title" maxlength="80"/></div>
+             accept="image/*,.heic,.heif,application/pdf"/></div>
         <div><label>Tags</label><input name="tags" placeholder="id, damage, review"/></div>
       </div>
       <div class="grid" style="margin-top:12px;">
@@ -189,7 +239,11 @@ router.get('/ops/records', async (req, res) => {
 
 router.post('/ops/records', upload.array('files', 10), async (req, res) => {
   const files = req.files || [];
-  if (!files.length) return back(res, '/ops/records', { err: 'Choose at least one file.' });
+  const returnTo = String(req.body?.returnTo || '').startsWith('/ops/')
+    ? String(req.body.returnTo)
+    : '/ops/records';
+
+  if (!files.length) return back(res, returnTo, { err: 'Choose at least one file.' });
 
   const tags = String(req.body?.tags || '')
     .split(',')
@@ -197,28 +251,52 @@ router.post('/ops/records', upload.array('files', 10), async (req, res) => {
     .filter(Boolean)
     .slice(0, 8);
 
-  let saved = 0;
+  // Uploading from a booking already says what the file belongs to, so the name
+  // is derived rather than typed — one less field, and nothing lands misfiled.
+  const booking = req.body?.booking ? await Booking.findById(req.body.booking).lean() : null;
+  const property = req.body?.property ? await Property.findById(req.body.property).lean() : null;
+  const existing = booking ? await Attachment.countDocuments({ booking: booking._id }) : 0;
+
+  const autoTitle = (index) => {
+    if (booking) return `${booking.guestName} · ${pretty(booking.checkIn)} · ${existing + index + 1}`;
+    if (property) return `${property.name} · ${pretty(new Date())} · ${index + 1}`;
+    return `Record · ${pretty(new Date())} · ${index + 1}`;
+  };
+
+  const saved = [];
+  const rejected = [];
   let before = 0;
   let after = 0;
 
-  for (const file of files) {
-    const stored = await store(file);
-    before += stored.originalBytes || stored.bytes;
-    after += stored.bytes;
-    await Attachment.create({
-      ...stored,
-      title: String(req.body?.title || '').slice(0, 80),
-      note: String(req.body?.note || '').slice(0, 200),
-      tags,
-      booking: req.body?.booking || undefined,
-      property: req.body?.property || undefined,
-      sensitive: Boolean(req.body?.sensitive)
-    });
-    saved += 1;
+  for (const [index, file] of files.entries()) {
+    try {
+      const stored = await store(file);
+      before += stored.originalBytes || stored.bytes;
+      after += stored.bytes;
+      await Attachment.create({
+        ...stored,
+        title: autoTitle(index),
+        note: String(req.body?.note || '').slice(0, 200),
+        tags,
+        booking: booking?._id,
+        property: property?._id,
+        sensitive: Boolean(req.body?.sensitive)
+      });
+      saved.push(file.originalname);
+    } catch (err) {
+      if (err instanceof UploadRejected) rejected.push(err.message);
+      else throw err;
+    }
   }
 
-  back(res, '/ops/records', {
-    msg: `${saved} file(s) stored — ${(before / 1048576).toFixed(1)}MB compressed to ${(after / 1048576).toFixed(1)}MB.`
+  const shrunk =
+    saved.length && before > after
+      ? ` — ${(before / 1048576).toFixed(1)}MB down to ${(after / 1048576).toFixed(1)}MB`
+      : '';
+
+  back(res, returnTo, {
+    msg: saved.length ? `${saved.length} file(s) stored${shrunk}.` : undefined,
+    err: rejected.length ? rejected.join(' ') : undefined
   });
 });
 

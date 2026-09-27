@@ -123,6 +123,9 @@ const bookingSchema = new Schema({
   referralCode: { type: String, index: true },
   flagged: String,
   notes: String,
+  // Dates moving after the fact silently changes past reports, so changes leave
+  // a trace.
+  history: [{ at: { type: Date, default: Date.now }, what: String }],
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -161,6 +164,27 @@ const attachmentSchema = new Schema({
   sensitive: { type: Boolean, default: false },
   uploadedAt: { type: Date, default: Date.now }
 });
+
+/* ── Enquiries we could not take ───────────────────────────────────────── */
+
+// Bookings record what was sold; without this, what was turned away leaves no
+// trace at all. It is the number that says whether being full is costing money.
+const enquirySchema = new Schema({
+  guestName: String,
+  guestPhone: String,
+  checkIn: { type: Date, required: true },
+  checkOut: { type: Date, required: true },
+  wanted: String,
+  tier: { type: String, enum: Object.keys(TIERS) },
+  reason: { type: String, default: 'no_availability' },
+  offered: String,
+  outcome: { type: String, enum: ['open', 'converted', 'lost'], default: 'open' },
+  booking: { type: Schema.Types.ObjectId, ref: 'Booking' },
+  note: String,
+  createdAt: { type: Date, default: Date.now }
+});
+
+export const Enquiry = model('Enquiry', enquirySchema);
 
 export const Participant = model('Participant', participantSchema);
 export const Click = model('Click', clickSchema);

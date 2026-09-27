@@ -91,7 +91,157 @@ export async function tierConflict({ roomIds, checkIn, checkOut, tier, excludeId
   );
 }
 
+const addDays = (d, n) => new Date(day(d).getTime() + n * 86_400_000);
+
+/**
+ * The stretches of a window a room is actually free, rather than a yes/no.
+ *
+ * A room booked 1–3 and 5–7 is free 3–5, but an enquiry for 2–6 reads as simply
+ * "unavailable" unless the gaps are worked out and shown. Losing that booking
+ * for want of a counter-offer is the expensive kind of mistake.
+ */
+export function freeStretches(windowStart, windowEnd, busyIntervals) {
+  const start = day(windowStart);
+  const end = day(windowEnd);
+  const clipped = busyIntervals
+    .map((b) => ({ from: day(b.checkIn), to: day(b.checkOut) }))
+    .filter((b) => b.from < end && b.to > start)
+    .sort((a, b) => a.from - b.from);
+
+  const gaps = [];
+  let cursor = start;
+  for (const busy of clipped) {
+    if (busy.from > cursor) gaps.push({ from: cursor, to: busy.from });
+    if (busy.to > cursor) cursor = busy.to;
+  }
+  if (cursor < end) gaps.push({ from: cursor, to: end });
+
+  return gaps
+    .map((g) => ({ ...g, nights: nightsBetween(g.from, g.to) }))
+    .filter((g) => g.nights > 0);
+}
+
+/**
+ * Per-room detail for a window: whether it covers the whole stay, and if not,
+ * what it could still take. Used to counter-offer instead of saying no.
+ */
+export async function availabilityDetail(checkIn, checkOut, { excludeId } = {}) {
+  const [properties, rooms, clashes] = await Promise.all([
+    Property.find({ active: true }).sort('name').lean(),
+    Room.find({ active: true }).lean(),
+    Booking.find(overlapQuery(checkIn, checkOut, excludeId), {
+      rooms: 1,
+      checkIn: 1,
+      checkOut: 1,
+      guestName: 1,
+      tier: 1
+    }).lean()
+  ]);
+
+  const wanted = nightsBetween(checkIn, checkOut);
+  const busyByRoom = new Map();
+  for (const booking of clashes) {
+    for (const roomId of booking.rooms) {
+      const key = String(roomId);
+      if (!busyByRoom.has(key)) busyByRoom.set(key, []);
+      busyByRoom.get(key).push(booking);
+    }
+  }
+
+  const byProperty = new Map(properties.map((p) => [String(p._id), { ...p, rooms: [] }]));
+  for (const room of rooms) {
+    const entry = byProperty.get(String(room.property));
+    if (!entry) continue;
+    const busy = busyByRoom.get(String(room._id)) || [];
+    const stretches = freeStretches(checkIn, checkOut, busy);
+    const longest = stretches.reduce((best, s) => (!best || s.nights > best.nights ? s : best), null);
+    entry.rooms.push({
+      ...room,
+      busy,
+      stretches,
+      longest,
+      free: busy.length === 0,
+      partial: busy.length > 0 && stretches.length > 0
+    });
+  }
+
+  return {
+    wanted,
+    properties: [...byProperty.values()].map((property) => {
+      const free = property.rooms.filter((r) => r.free);
+      return {
+        ...property,
+        wholeAvailable: property.rooms.length > 0 && free.length === property.rooms.length,
+        freeRooms: free,
+        roomsAvailable: property.splittable ? free : [],
+        partialRooms: property.rooms.filter((r) => r.partial)
+      };
+    })
+  };
+}
+
+/**
+ * A night-by-night strip per room. Gaps are far easier to read as a row of
+ * cells than as a list of date ranges — which is how they get missed.
+ */
+export async function calendarStrip(from, nights = 30) {
+  const start = day(from);
+  const end = addDays(start, nights);
+
+  const [rooms, bookings] = await Promise.all([
+    Room.find({ active: true }).populate('property').lean(),
+    Booking.find(overlapQuery(start, end), {
+      rooms: 1,
+      checkIn: 1,
+      checkOut: 1,
+      guestName: 1,
+      tier: 1,
+      status: 1
+    }).lean()
+  ]);
+
+  const days = Array.from({ length: nights }, (_, i) => addDays(start, i));
+
+  return {
+    days,
+    rows: rooms
+      .filter((r) => r.property?.active)
+      .map((room) => {
+        const mine = bookings.filter((b) => b.rooms.some((id) => String(id) === String(room._id)));
+        return {
+          room,
+          cells: days.map((d) => {
+            const hit = mine.find((b) => day(b.checkIn) <= d && day(b.checkOut) > d);
+            return { date: d, booking: hit || null };
+          })
+        };
+      })
+  };
+}
+
 export class BookingConflict extends Error {}
+
+/**
+ * How far a stay can run before it hits the next booking on the same rooms.
+ * Returning the limit rather than a bare refusal lets ops offer the guest the
+ * nights that do exist.
+ */
+export async function extensionLimit(booking) {
+  const next = await Booking.find(
+    {
+      _id: { $ne: booking._id },
+      status: { $in: BLOCKING_STATUSES },
+      rooms: { $in: booking.rooms },
+      checkIn: { $gte: day(booking.checkOut) }
+    },
+    { checkIn: 1, guestName: 1 }
+  )
+    .sort({ checkIn: 1 })
+    .limit(1)
+    .lean();
+
+  return next.length ? { until: next[0].checkIn, blockedBy: next[0].guestName } : { until: null };
+}
 
 /**
  * Reserves rooms inside a transaction where the database supports one, so two

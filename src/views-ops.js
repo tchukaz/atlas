@@ -22,12 +22,38 @@ export const OPS_CSS = `
                    background:#0E0E0E; }
   .thumbs img { width:100%; height:130px; object-fit:cover; display:block; }
   .thumbs figcaption { padding:8px 10px; font-size:12px; color:var(--muted); }
+  .roomopt { display:flex; align-items:center; gap:9px; padding:7px 2px; font-size:14px;
+             color:var(--cream); cursor:pointer; }
+  .roomopt input { width:auto; flex-shrink:0; transform:scale(1.25); }
+  .roomopt input:disabled + span { color:var(--muted); }
+  label.plain { text-transform:none; letter-spacing:normal; color:var(--muted);
+                font-size:13px; display:flex; align-items:center; gap:8px; }
+  label.plain input { width:auto; }
+
+  @media (max-width: 720px) {
+    /* Wide tables become one card per row: ops reads this on a phone far more
+       often than at a desk, and a six-column table there is unusable. */
+    table.stack thead { display:none; }
+    table.stack, table.stack tbody, table.stack tr, table.stack td { display:block; width:100%; }
+    table.stack tr { border:1px solid var(--line); border-radius:3px; padding:6px 10px;
+                     margin-bottom:12px; }
+    table.stack td { border:none; padding:6px 0; text-align:left; }
+    table.stack td.num { text-align:left; }
+    table.stack td[data-h]::before {
+      content: attr(data-h); display:block; font-size:10px; letter-spacing:0.16em;
+      text-transform:uppercase; color:var(--gold); margin-bottom:3px;
+    }
+    .grid { grid-template-columns:1fr; }
+    .tabs a { flex:1 1 auto; text-align:center; }
+    button, .grid input, .grid select { min-height:44px; }
+  }
 `;
 
 const TABS = [
   ['/ops/bookings', 'Bookings'],
   ['/ops/calendar', 'Today'],
   ['/ops/inventory', 'Inventory'],
+  ['/ops/enquiries', 'Enquiries'],
   ['/ops/records', 'Records'],
   ['/ops/reports', 'Reports'],
   ['/admin', 'Referrals']

@@ -19,7 +19,12 @@ export const IMAGE = {
   maxWidth: Number(process.env.IMAGE_MAX_WIDTH) || 1600,
   quality: Number(process.env.IMAGE_QUALITY) || 80,
   thumbWidth: 320,
-  maxUploadBytes: Number(process.env.MAX_UPLOAD_MB || 15) * 1024 * 1024
+  maxUploadBytes: Number(process.env.MAX_UPLOAD_MB || 15) * 1024 * 1024,
+  // PDFs are stored as sent — nothing here re-encodes them, and pretending
+  // otherwise produced an 11MB "compressed" to 10.9MB. A scanned document is
+  // images in a wrapper, so photographing it instead is both smaller and
+  // easier; the cap keeps the occasional real document possible.
+  maxPdfBytes: Number(process.env.MAX_PDF_MB || 5) * 1024 * 1024
 };
 
 // Rotating this invalidates every logged visitor fingerprint, which is the point:
