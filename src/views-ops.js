@@ -89,6 +89,7 @@ const SECONDARY = [
   ['/ops/records', 'Records', 'Every photo and document', 'records.view'],
   ['/ops/setup', 'Setup', 'Apartments, bedrooms and what you sell', 'setup.manage'],
   ['/admin', 'Referrals', 'The referral challenge', 'referrals.manage'],
+  ['/ops/jobs', 'Hiring', 'Job postings and who has applied', 'jobs.manage'],
   ['/ops/team', 'Team', 'Who has access and what they can do', 'users.manage'],
   ['/ops/activity', 'Activity', 'Who did what', 'users.manage'],
   ['/ops/settings', 'Settings', 'Retention and other choices', 'settings.manage']

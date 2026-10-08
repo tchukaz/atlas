@@ -245,6 +245,44 @@ export const Session = model('Session', sessionSchema);
 export const Audit = model('Audit', auditSchema);
 export const Setting = model('Setting', settingSchema);
 
+/* ── Hiring ────────────────────────────────────────────────────────────── */
+
+const jobSchema = new Schema({
+  title: { type: String, required: true },
+  slug: { type: String, required: true, unique: true },
+  summary: String,
+  responsibilities: [String],
+  requirements: [String],
+  // Free-form label/value pairs so a posting can carry whatever it needs —
+  // shift pattern, uniform, who it reports to — without a schema change.
+  details: [{ label: String, value: String }],
+  employmentType: { type: String, default: 'FULL_TIME' },
+  location: { type: String, default: 'Iwofe, Port Harcourt, Rivers State' },
+  status: { type: String, enum: ['draft', 'open', 'closed'], default: 'draft', index: true },
+  postedOn: { type: Date, default: Date.now },
+  // Google drops a posting past this date, and a filled vacancy left up
+  // generates calls for months. Both reasons to keep it.
+  closesOn: Date,
+  createdAt: { type: Date, default: Date.now }
+});
+
+const applicationSchema = new Schema({
+  job: { type: Schema.Types.ObjectId, ref: 'Job', required: true, index: true },
+  name: { type: String, required: true },
+  phone: String,
+  email: String,
+  about: String,
+  hasGuarantors: Boolean,
+  hasPoliceCert: Boolean,
+  source: { type: String, enum: ['form', 'whatsapp'], default: 'form' },
+  status: { type: String, enum: ['new', 'shortlisted', 'rejected', 'hired'], default: 'new' },
+  note: String,
+  createdAt: { type: Date, default: Date.now }
+});
+
+export const Job = model('Job', jobSchema);
+export const Application = model('Application', applicationSchema);
+
 export const Enquiry = model('Enquiry', enquirySchema);
 
 export const Participant = model('Participant', participantSchema);

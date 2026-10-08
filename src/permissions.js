@@ -28,7 +28,9 @@ export const ACTIONS = [
   'setup.manage',
   'referrals.manage',
   'users.manage',
-  'settings.manage'
+  'settings.manage',
+  'jobs.manage',
+  'applications.view'
 ];
 
 export const ROLES = {
@@ -52,7 +54,9 @@ export const ROLES = {
       'enquiries.view',
       'enquiries.edit',
       'reports.view',
-      'referrals.manage'
+      'referrals.manage',
+      'jobs.manage',
+      'applications.view'
     ]
   },
   frontdesk: {

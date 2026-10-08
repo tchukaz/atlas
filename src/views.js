@@ -76,19 +76,23 @@ const BASE_CSS = `
   }
 `;
 
-export function layout({ title, body, extraCss = '' }) {
+// Everything built on this layout is an internal or utility page, so noindex is
+// the right default. Careers pages opt out: a job listing nobody can find is
+// not a job listing.
+export function layout({ title, body, extraCss = '', head = '', indexable = false }) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<meta name="robots" content="noindex"/>
+${indexable ? '<meta name="robots" content="index, follow"/>' : '<meta name="robots" content="noindex"/>'}
 <title>${esc(title)}</title>
 <link rel="icon" href="/assets/favicon.png"/>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;600&family=Montserrat:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>${BASE_CSS}${extraCss}</style>
+${head}
 </head>
 <body><div class="wrap">${body}</div></body>
 </html>`;

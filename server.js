@@ -9,6 +9,7 @@ import goRoutes from './src/routes/go.js';
 import joinRoutes from './src/routes/join.js';
 import meRoutes from './src/routes/me.js';
 import pageRoutes from './src/routes/pages.js';
+import careerRoutes from './src/routes/careers.js';
 import leaderboardRoutes from './src/routes/leaderboard.js';
 import authRoutes from './src/routes/auth-routes.js';
 import adminRoutes from './src/routes/admin.js';
@@ -17,6 +18,7 @@ import opsRoutes from './src/routes/ops.js';
 import opsBookingRoutes from './src/routes/ops-bookings.js';
 import opsRecordRoutes from './src/routes/ops-records.js';
 import opsCalendarRoutes from './src/routes/ops-calendar.js';
+import opsJobRoutes from './src/routes/ops-jobs.js';
 
 const ROOT = process.cwd();
 const app = express();
@@ -35,6 +37,7 @@ app.use(goRoutes);
 app.use(joinRoutes);
 app.use(meRoutes);
 app.use(pageRoutes);
+app.use(careerRoutes);
 app.use(leaderboardRoutes);
 app.use(authRoutes);
 app.use(adminRoutes);
@@ -43,6 +46,7 @@ app.use(opsRoutes);
 app.use(opsBookingRoutes);
 app.use(opsCalendarRoutes);
 app.use(opsRecordRoutes);
+app.use(opsJobRoutes);
 
 // Served by allowlist rather than by mounting the repo root: .env, src/ and the
 // whole of data/ — which now holds guest records and uploads — sit beside the
