@@ -15,7 +15,14 @@ const IMAGE_TYPES = new Set([
   'image/heic',
   'image/heif'
 ]);
-const FILE_TYPES = new Set(['application/pdf']);
+// A CV arrives as a PDF, a Word file or a photograph of one. Word is stored as
+// sent and never opened server-side; blocking it would turn a format quirk into
+// a rejection of candidates who are otherwise fine.
+const DOC_TYPES = new Set([
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+]);
+const FILE_TYPES = new Set(['application/pdf', ...DOC_TYPES]);
 
 // Held in memory so nothing untrusted is written anywhere before it has been
 // re-encoded — which also strips EXIF, including the GPS coordinates phones
@@ -26,7 +33,7 @@ export const upload = multer({
   fileFilter: (_req, file, cb) => {
     // Some browsers hand over HEIC as octet-stream with no useful type, so the
     // extension is checked too rather than rejecting a valid iPhone photo.
-    const byExtension = /\.(jpe?g|png|webp|gif|avif|heic|heif|pdf)$/i.test(file.originalname || '');
+    const byExtension = /\.(jpe?g|png|webp|gif|avif|heic|heif|pdf|docx?)$/i.test(file.originalname || '');
     if (IMAGE_TYPES.has(file.mimetype) || FILE_TYPES.has(file.mimetype) || byExtension) {
       return cb(null, true);
     }
@@ -38,22 +45,25 @@ export class UploadRejected extends Error {}
 
 export async function store(file) {
   const id = crypto.randomBytes(12).toString('hex');
-  const isPdf =
+  const asDocument =
     FILE_TYPES.has(file.mimetype) ||
-    (/\.pdf$/i.test(file.originalname || '') && !IMAGE_TYPES.has(file.mimetype));
+    (/\.(pdf|docx?)$/i.test(file.originalname || '') && !IMAGE_TYPES.has(file.mimetype));
 
-  if (isPdf) {
+  if (asDocument) {
     if (file.buffer.length > IMAGE.maxPdfBytes) {
       throw new UploadRejected(
-        `PDFs are stored as they arrive — nothing shrinks them — so they are capped at ` +
+        `Documents are stored as they arrive — nothing shrinks them — so they are capped at ` +
           `${Math.round(IMAGE.maxPdfBytes / 1048576)}MB. "${file.originalname}" is ` +
           `${(file.buffer.length / 1048576).toFixed(1)}MB. Photograph the document instead and it ` +
           `will compress to a fraction of that.`
       );
     }
-    const filename = `${id}.pdf`;
-    await put(filename, file.buffer, 'application/pdf');
-    return { kind: 'file', filename, mimetype: 'application/pdf', bytes: file.buffer.length };
+    const word = DOC_TYPES.has(file.mimetype) || /\.docx?$/i.test(file.originalname || '');
+    const ext = word ? (/\.doc$/i.test(file.originalname || '') ? 'doc' : 'docx') : 'pdf';
+    const type = word ? file.mimetype || 'application/octet-stream' : 'application/pdf';
+    const filename = `${id}.${ext}`;
+    await put(filename, file.buffer, type);
+    return { kind: 'file', filename, mimetype: type, bytes: file.buffer.length };
   }
 
   const filename = `${id}.jpg`;

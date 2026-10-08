@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { SITE_URL, WHATSAPP_NUMBER } from '../config.js';
+import { SITE_URL } from '../config.js';
 import { esc, layout } from '../views.js';
 import { normalizePhone } from '../phone.js';
 import { Application, Job } from '../models.js';
+import { UploadRejected, store, upload } from '../uploads.js';
 
 const router = Router();
 
@@ -16,10 +17,6 @@ const CAREERS_CSS = `
   .posting ul { margin:10px 0 0 20px; }
   .posting li { color:#B9B2A6; font-size:15px; margin-bottom:8px; }
   .posting p { color:#B9B2A6; font-size:15px; }
-  .apply { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-top:18px; }
-  .apply .wa { background:#25D366; border-color:#25D366; color:#0A0A0A; text-decoration:none;
-               display:inline-block; padding:13px 26px; border-radius:3px; font-size:11px;
-               font-weight:600; letter-spacing:0.14em; text-transform:uppercase; }
   .field { margin-bottom:16px; }
   .field label { display:block; font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
                  color:var(--gold); margin-bottom:7px; }
@@ -31,11 +28,6 @@ const CAREERS_CSS = `
   .closed { border-left:2px solid var(--muted); padding:12px 16px; background:rgba(245,240,232,0.04);
             margin-bottom:22px; }
 `;
-
-const applyOnWhatsApp = (job) =>
-  `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(
-    `Hi Atlas House! I would like to apply for the ${job.title} role.`
-  )}`;
 
 /** Google will list an open role in Google Jobs if this is present and valid. */
 function jobPostingSchema(job) {
@@ -172,15 +164,12 @@ router.get('/careers/:slug', async (req, res) => {
       ? '<p class="muted" style="font-size:13px;"><a href="/careers">See other openings</a></p>'
       : `<div class="card">
     <h2 class="serif" style="margin-top:0;">Apply</h2>
-    <p class="muted" style="font-size:14px;">Message us, or leave your details and we will call you.</p>
-    <div class="apply">
-      <a class="wa" href="${esc(applyOnWhatsApp(job))}" target="_blank" rel="noopener">Apply on WhatsApp</a>
-      <span class="muted" style="font-size:13px;">or fill this in &darr;</span>
-    </div>
+    <p class="muted" style="font-size:14px;">Fill this in and attach your CV. We review every one.</p>
 
-    <form method="post" action="/careers/${esc(job.slug)}/apply" style="margin-top:24px;max-width:520px;">
+    <form method="post" action="/careers/${esc(job.slug)}/apply" enctype="multipart/form-data"
+          style="margin-top:22px;max-width:520px;">
       <div class="field">
-        <label for="name">Your name</label>
+        <label for="name">Your full name</label>
         <input id="name" name="name" required maxlength="80"/>
       </div>
       <div class="field">
@@ -189,9 +178,9 @@ router.get('/careers/:slug', async (req, res) => {
         <div class="hint">We will call or message this number.</div>
       </div>
       <div class="field">
-        <label for="about">Your experience</label>
-        <textarea id="about" name="about" rows="4" maxlength="600"
-                  placeholder="Where have you worked before, and for how long?"></textarea>
+        <label for="cv">Your CV</label>
+        <input id="cv" name="cv" type="file" required accept=".pdf,.doc,.docx,image/*"/>
+        <div class="hint">PDF, Word document, or a clear photo. Up to 2MB.</div>
       </div>
       <label class="check"><input type="checkbox" name="hasGuarantors" value="1"/>
         <span>I can provide two guarantors with their contact details</span></label>
@@ -216,7 +205,7 @@ router.get('/careers/:slug', async (req, res) => {
 
 const attempts = new Map();
 
-router.post('/careers/:slug/apply', async (req, res) => {
+router.post('/careers/:slug/apply', upload.single('cv'), async (req, res) => {
   const slug = String(req.params.slug).toLowerCase();
   const to = `/careers/${slug}`;
   const back = (params) => res.redirect(302, `${to}?${new URLSearchParams(params)}`);
@@ -230,7 +219,7 @@ router.post('/careers/:slug/apply', async (req, res) => {
   const ip = req.ip || 'unknown';
   const seen = (attempts.get(ip) || 0) + 1;
   attempts.set(ip, seen);
-  if (seen > 5) return back({ err: 'Too many attempts. Please message us on WhatsApp instead.' });
+  if (seen > 5) return back({ err: 'Too many attempts. Please try again later.' });
 
   const name = String(b.name || '').trim().slice(0, 80);
   if (name.length < 2) return back({ err: 'Please give your name.' });
@@ -238,14 +227,25 @@ router.post('/careers/:slug/apply', async (req, res) => {
   const phone = normalizePhone(b.phone);
   if (!phone) return back({ err: 'That does not look like a Nigerian mobile number.' });
 
+  if (!req.file) return back({ err: 'Please attach your CV.' });
+
+  let cv;
+  try {
+    cv = await store(req.file);
+  } catch (err) {
+    if (err instanceof UploadRejected) return back({ err: err.message });
+    throw err;
+  }
+
   await Application.create({
     job: job._id,
     name,
     phone,
-    about: String(b.about || '').trim().slice(0, 600),
+    cvFilename: cv.filename,
+    cvKind: cv.kind,
+    cvBytes: cv.bytes,
     hasGuarantors: Boolean(b.hasGuarantors),
-    hasPoliceCert: Boolean(b.hasPoliceCert),
-    source: 'form'
+    hasPoliceCert: Boolean(b.hasPoliceCert)
   });
 
   back({ msg: `Thank you, ${name.split(/\s+/)[0]}. We have your application and will be in touch.` });

@@ -5,6 +5,7 @@ import { opsPage as page, flashOf, back, iso, pretty, todayIso } from '../views-
 import { requireCan, record } from '../auth.js';
 import { formatPhone } from '../phone.js';
 import { Application, Job } from '../models.js';
+import { open as openObject } from '../storage.js';
 
 const router = Router();
 
@@ -242,7 +243,12 @@ router.get('/ops/jobs/:id/applications', requireCan('applications.view'), async 
           (a) => `<tr>
       <td data-h="Applicant"><strong>${esc(a.name)}</strong><br/>
         <span class="muted" style="font-size:11px;">${esc(formatPhone(a.phone) || '')}</span></td>
-      <td data-h="Experience" style="max-width:360px;">${esc(a.about || '—')}</td>
+      <td data-h="CV">${
+        a.cvFilename
+          ? `<a href="/ops/applications/${a._id}/cv" target="_blank" rel="noopener">Open CV</a>
+             <br/><span class="muted" style="font-size:11px;">${Math.round((a.cvBytes || 0) / 1024)}KB</span>`
+          : '<span class="muted">none</span>'
+      }</td>
       <td data-h="Checks">
         <span class="pill ${a.hasGuarantors ? 'good' : 'warn'}">guarantors ${a.hasGuarantors ? 'yes' : 'no'}</span>
         <span class="pill ${a.hasPoliceCert ? 'good' : 'warn'}">police cert ${a.hasPoliceCert ? 'yes' : 'no'}</span></td>
@@ -282,13 +288,32 @@ router.get('/ops/jobs/:id/applications', requireCan('applications.view'), async 
 
   <div class="card scroll">
     <table class="stack"><thead><tr>
-      <th>Applicant</th><th>Experience</th><th>Checks</th><th>Applied</th><th>Status</th>
+      <th>Applicant</th><th>CV</th><th>Checks</th><th>Applied</th><th>Status</th>
     </tr></thead><tbody>${rows}</tbody></table>
   </div>
 
   <p class="muted" style="font-size:13px;"><a href="/ops/jobs">← All roles</a></p>`
     })
   );
+});
+
+// Served through here rather than as a public URL: a CV carries a name, a
+// number and an address history.
+router.get('/ops/applications/:id/cv', requireCan('applications.view'), async (req, res) => {
+  const app = await Application.findById(req.params.id).lean();
+  if (!app?.cvFilename) return res.status(404).end();
+
+  const found = await openObject(app.cvFilename);
+  if (!found) return res.status(404).type('html').send('That file is no longer stored.');
+
+  await record(req, 'application.cv_viewed', app.name);
+  res.set('Cache-Control', 'no-store, private');
+  if (found.kind === 'path') return res.sendFile(found.path);
+
+  res.set('Content-Type', found.contentType || 'application/octet-stream');
+  if (found.length) res.set('Content-Length', found.length);
+  const { Readable } = await import('node:stream');
+  Readable.fromWeb(found.stream).pipe(res);
 });
 
 router.post('/ops/applications/:id', requireCan('applications.view'), async (req, res) => {

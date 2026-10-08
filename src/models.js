@@ -271,10 +271,13 @@ const applicationSchema = new Schema({
   name: { type: String, required: true },
   phone: String,
   email: String,
-  about: String,
+  // The CV lives wherever uploads go (R2 in production) and is served only to a
+  // signed-in admin, like every other file here.
+  cvFilename: String,
+  cvKind: String,
+  cvBytes: Number,
   hasGuarantors: Boolean,
   hasPoliceCert: Boolean,
-  source: { type: String, enum: ['form', 'whatsapp'], default: 'form' },
   status: { type: String, enum: ['new', 'shortlisted', 'rejected', 'hired'], default: 'new' },
   note: String,
   createdAt: { type: Date, default: Date.now }
