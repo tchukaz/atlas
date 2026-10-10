@@ -19,6 +19,10 @@ const participantSchema = new Schema({
 
 const clickSchema = new Schema({
   code: { type: String, required: true, index: true },
+  // A campaign's public code is numeric and a participant's handle could in
+  // principle be the same string, so the two namespaces are kept apart here
+  // rather than hoping they never collide.
+  kind: { type: String, enum: ['referral', 'campaign'], default: 'referral', index: true },
   ts: { type: Date, default: Date.now, index: true },
   visitor: { type: String, required: true },
   subnet: String,
@@ -127,6 +131,9 @@ const bookingSchema = new Schema({
   // What the guest specifically came for. If this is set, the room cannot be
   // swapped for one that lacks it when making space for someone else.
   requestedAmenities: [String],
+  // Separate from referralCode: an ad click earns nobody a payout, and mixing
+  // them would mean paying ₦5,000 to nobody.
+  campaignCode: { type: String, index: true },
   flagged: String,
   notes: String,
   // Dates moving after the fact silently changes past reports, so changes leave
@@ -282,6 +289,28 @@ const applicationSchema = new Schema({
   note: String,
   createdAt: { type: Date, default: Date.now }
 });
+
+/* ── Ad campaigns ──────────────────────────────────────────────────────── */
+
+const campaignSchema = new Schema({
+  name: { type: String, required: true },
+  // What the guest sees in their WhatsApp message. Numeric so it reads as a
+  // reference rather than as tracking.
+  code: { type: String, required: true, unique: true },
+  platform: { type: String, default: 'other' },
+  startsOn: Date,
+  endsOn: Date,
+  budget: { type: Number, default: 0 },
+  spend: { type: Number, default: 0 },
+  // Counted by hand from the WhatsApp inbox, the same way referral enquiries
+  // are — there is no automatic signal for a conversation.
+  enquiries: { type: Number, default: 0 },
+  notes: String,
+  active: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+export const Campaign = model('Campaign', campaignSchema);
 
 export const Job = model('Job', jobSchema);
 export const Application = model('Application', applicationSchema);

@@ -13,6 +13,8 @@ export const normalizeCode = (raw) =>
 
 export async function codeProblem(code) {
   if (code.length < 3) return 'Pick at least 3 letters or numbers.';
+  // Digits alone belong to ad campaigns, which share the WhatsApp inbox.
+  if (/^[0-9]+$/.test(code)) return 'Pick something with letters in it, not just numbers.';
   if (RESERVED.has(code)) return `"${code}" is reserved. Try another.`;
   if (await findByCode(code)) return `"${code}" is already taken.`;
   return null;
@@ -59,7 +61,7 @@ export async function recordClick({ code, ip, userAgent, referer, selfToken }) {
   });
 }
 
-const COUNTED = { isBot: false, isSelf: false };
+const COUNTED = { isBot: false, isSelf: false, kind: { $ne: 'campaign' } };
 
 /**
  * Bookings decide the order; clicks only ever break a tie. Faking traffic

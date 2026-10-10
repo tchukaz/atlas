@@ -9,6 +9,7 @@ export const OPS_CSS = `
     display:inline-block; cursor:pointer; list-style:none;
   }
   .tabs summary::-webkit-details-marker { display:none; }
+  .pickclick.on { border-color:var(--gold); color:var(--gold); }
   .tabs a.on, .tabs summary.on { background:var(--gold); color:var(--black);
                                  border-color:var(--gold); font-weight:600; }
   .more { position:relative; }
@@ -86,6 +87,7 @@ const PRIMARY = [
 const SECONDARY = [
   ['/ops/enquiries', 'Enquiries', 'Dates you were asked for and could not sell', 'enquiries.view'],
   ['/ops/reports', 'Reports', 'Occupancy, revenue and demand', 'reports.view'],
+  ['/ops/campaigns', 'Campaigns', 'Ad links, spend and what they returned', 'reports.view'],
   ['/ops/records', 'Records', 'Every photo and document', 'records.view'],
   ['/ops/setup', 'Setup', 'Apartments, bedrooms and what you sell', 'setup.manage'],
   ['/admin', 'Referrals', 'The referral challenge', 'referrals.manage'],

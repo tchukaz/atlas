@@ -1,7 +1,9 @@
 import { Router } from 'express';
-import { WHATSAPP_NUMBER, waLink } from '../config.js';
+import { WHATSAPP_NUMBER, campaignWaLink, waLink } from '../config.js';
 import { esc } from '../views.js';
 import { findByCode, normalizeCode, recordClick } from '../store.js';
+import { Campaign } from '../models.js';
+import { normalizeCampaignCode, recordCampaignClick } from '../campaigns.js';
 
 const router = Router();
 
@@ -85,5 +87,31 @@ router.get('/go/:code', async (req, res) => {
 });
 
 router.get('/go', (_req, res) => res.redirect(302, '/join'));
+
+/**
+ * Ad campaign links. Deliberately not /ad/ — common ad-blocker filter lists
+ * match that path and would silently eat the link, which would show up as poor
+ * ad performance rather than as blocking.
+ */
+router.get('/c/:code', async (req, res) => {
+  const code = normalizeCampaignCode(req.params.code);
+  const campaign = code ? await Campaign.findOne({ code }).lean() : null;
+
+  if (code) {
+    recordCampaignClick({
+      code,
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+      referer: req.get('referer')
+    }).catch((err) => console.error('campaign click log failed:', err.message));
+  }
+
+  // An unknown or retired code still reaches WhatsApp: an old advert lingering
+  // somewhere is still a lead, and a dead link wastes it.
+  res
+    .set('Cache-Control', 'no-store')
+    .type('html')
+    .send(interstitial(campaign ? campaignWaLink(campaign.code) : FALLBACK_WA));
+});
 
 export default router;

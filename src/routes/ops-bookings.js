@@ -5,6 +5,7 @@ import { esc } from '../views.js';
 import { opsPage as page, flashOf, back, iso, pretty, todayIso } from '../views-ops.js';
 import { requireAuth, requireCan, record } from '../auth.js';
 import { can, money } from '../permissions.js';
+import { recentClicks } from '../campaigns.js';
 import { formatPhone, normalizePhone } from '../phone.js';
 import {
   Attachment,
@@ -66,12 +67,13 @@ router.get('/ops/bookings', requireCan('bookings.view'), async (req, res) => {
   const checkIn = req.query.in || todayIso();
   const checkOut = req.query.out || iso(new Date(Date.now() + 86_400_000));
 
-  const [bookings, products, detail, methods, amenityRows] = await Promise.all([
+  const [bookings, products, detail, methods, amenityRows, arrivals] = await Promise.all([
     Booking.find().sort({ checkIn: -1 }).limit(100).populate('rooms').lean(),
     Product.find({ active: true }).sort('name').lean(),
     availabilityDetail(checkIn, checkOut),
     frequentMethods(),
-    Property.distinct('amenities')
+    Property.distinct('amenities'),
+    recentClicks(30)
   ]);
   const amenityList = (amenityRows || []).filter(Boolean);
 
@@ -252,11 +254,31 @@ router.get('/ops/bookings', requireCan('bookings.view'), async (req, res) => {
         <div><label>Quoted</label><input name="quotedAmount" type="number" min="0" id="quoted" inputmode="numeric"/></div>
         <div><label>Amount paid now</label><input name="paidNow" type="number" min="0" inputmode="numeric"/></div>
         <div><label>Refundable deposit</label><input name="depositAmount" type="number" min="0" inputmode="numeric"/></div>
-        <div><label>Referral code</label><input name="referralCode" maxlength="20" placeholder="optional"/></div>
+        <div><label>Referral code</label><input name="referralCode" id="refcode" maxlength="20" placeholder="optional"/></div>
+        <div><label>Campaign code</label><input name="campaignCode" id="campcode" maxlength="8" inputmode="numeric" placeholder="optional"/></div>
         <div><label>Came for</label>
           <input name="requestedAmenities" list="amenitylist" placeholder="ps5, snooker"/>
           <div class="muted" style="font-size:11px;margin-top:4px;">Locks the room against reshuffles</div></div>
       </div>
+      ${
+        arrivals.length
+          ? `<div style="margin-top:16px;border-left:2px solid var(--gold);padding-left:14px;">
+        <div class="stat-label" style="margin-bottom:8px;">Clicks in the last 30 minutes</div>
+        <p class="muted" style="font-size:12px;margin-bottom:10px;">
+          A guest who deleted the code from their message still left a click. Pick the one that
+          matches when they got in touch.
+        </p>
+        ${arrivals
+          .map(
+            (a) => `<button type="button" class="ghost pickclick"
+                      data-kind="${a.kind}" data-code="${esc(a.code)}"
+                      style="margin:0 6px 6px 0;">${esc(a.label)} · ${a.minutesAgo}m ago</button>`
+          )
+          .join('')}
+      </div>`
+          : ''
+      }
+
       <div style="margin-top:16px;">
         <label class="stat-label" style="display:block;margin-bottom:8px;color:var(--gold);">Bedrooms</label>
         ${roomChecks}
@@ -279,6 +301,15 @@ router.get('/ops/bookings', requireCan('bookings.view'), async (req, res) => {
   <datalist id="amenitylist">${amenityList.map((a) => `<option value="${esc(a)}"></option>`).join('')}</datalist>
 
   <script>
+    document.querySelectorAll('.pickclick').forEach((button) => {
+      button.addEventListener('click', () => {
+        const target = button.dataset.kind === 'campaign' ? 'campcode' : 'refcode';
+        document.getElementById(target).value = button.dataset.code;
+        document.querySelectorAll('.pickclick').forEach((b) => b.classList.remove('on'));
+        button.classList.add('on');
+      });
+    });
+
     const productSelect = document.querySelector('select[name=product]');
     productSelect?.addEventListener('change', () => {
       const opt = productSelect.selectedOptions[0];
@@ -373,6 +404,7 @@ router.post('/ops/bookings', requireCan('bookings.create'), async (req, res) => 
                 ? { amount: depositAmount, takenOn: new Date() }
                 : { amount: 0 },
               referralCode: String(b.referralCode || '').toLowerCase().replace(/[^a-z0-9]/g, '') || undefined,
+              campaignCode: String(b.campaignCode || '').replace(/[^0-9]/g, '').slice(0, 8) || undefined,
               requestedAmenities: String(b.requestedAmenities || '')
                 .split(',')
                 .map((a) => a.trim().toLowerCase())

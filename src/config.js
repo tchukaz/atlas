@@ -50,6 +50,16 @@ export const EMAIL = {
 
 export const REF_MESSAGE = (code) => `Hi Atlas House! (ref: ${code.toUpperCase()})`;
 
+// Reads as a booking reference rather than as tracking, and sits mid-sentence
+// where it is less likely to be thumbed away than a trailing tag.
+export const CAMPAIGN_MESSAGE = (code) =>
+  `Hi Atlas House - ${code}, I'd like to book your apartment.`;
+
+export const campaignWaLink = (code) =>
+  `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(CAMPAIGN_MESSAGE(code))}`;
+
+export const campaignLink = (code) => `${SITE_URL}/c/${code}`;
+
 export const waLink = (code) =>
   `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(REF_MESSAGE(code))}`;
 

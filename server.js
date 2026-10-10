@@ -19,6 +19,7 @@ import opsBookingRoutes from './src/routes/ops-bookings.js';
 import opsRecordRoutes from './src/routes/ops-records.js';
 import opsCalendarRoutes from './src/routes/ops-calendar.js';
 import opsJobRoutes from './src/routes/ops-jobs.js';
+import opsCampaignRoutes from './src/routes/ops-campaigns.js';
 
 const ROOT = process.cwd();
 const app = express();
@@ -47,6 +48,7 @@ app.use(opsBookingRoutes);
 app.use(opsCalendarRoutes);
 app.use(opsRecordRoutes);
 app.use(opsJobRoutes);
+app.use(opsCampaignRoutes);
 
 // Served by allowlist rather than by mounting the repo root: .env, src/ and the
 // whole of data/ — which now holds guest records and uploads — sit beside the
